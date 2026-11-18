@@ -24,7 +24,7 @@ POP_SIZE = 1000
 EPOCHS = 10000
 mutation_chance = 0.01
 
-device = 'cuda'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 dtype = torch.float32
 
 population: list[list[SdfNode]] = [generate(3, 20, device, dtype) for i in range(POP_SIZE)]
