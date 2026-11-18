@@ -1,8 +1,8 @@
 # sdf definitions and operators
 
-from typing import Protocol
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Self
+from collections.abc import Callable
 import torch
 import random
 
@@ -38,8 +38,8 @@ def transform(p: torch.Tensor, t: torch.Tensor, R: torch.Tensor):
     Applies R^-1*(p - t)
     (1,V,3), (B,1,3), (B,1,3,3) -> (B,V,3)
     """
-    p -= t
-    return (R.transpose(-1, -2) @ p.unsqueeze(-1)).squeeze(-1)
+    pt = p - t
+    return (R.transpose(-1, -2) @ pt.unsqueeze(-1)).squeeze(-1)
 
 def random_rotation(batch_size: int, max_angle: float, device: torch.device | str, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """
@@ -77,8 +77,9 @@ def sdUnion(d1: torch.Tensor, d2: torch.Tensor, k: torch.Tensor) -> torch.Tensor
     """
     (B,V), (B,V), (B,1) -> (B,V)
     """
-    h = torch.square(torch.clip(k - torch.abs(d1 - d2), min=0))
-    return torch.minimum(d1, d2) - h/(4*k)
+    ka = torch.abs(k)
+    h = torch.square(torch.clip(ka - torch.abs(d1 - d2), min=0))
+    return torch.minimum(d1, d2) - h/(4*ka)
 
 def sdSubtraction(d1: torch.Tensor, d2: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     """
@@ -102,13 +103,15 @@ def sdRingSegment(p: torch.Tensor, theta: torch.Tensor, r: torch.Tensor):
     """
     (B,V,3), (B,1,1), (B,1,1) -> (B,V)
     """
-    p[:,:,0] = torch.abs(p[:,:,0])
+    px = torch.abs(p[:,:,0:1])
+    py = p[:,:,1:2]
     
     half_theta = torch.clip(torch.abs(theta), max=torch.pi)/2
-    xc = torch.cos(half_theta)*p[:,:,0]
-    ys = torch.sin(half_theta)*p[:,:,1]
-    k = torch.where(xc > ys, xc + ys, norm(p[:,:,:2]))
-    res = torch.sqrt(norm2(p) + r*r - 2.0*torch.abs(r)*k)
+    c = torch.cos(half_theta)
+    s = torch.sin(half_theta)
+    k = torch.where(px*c > py*s, px*s + py*c, norm(p[:,:,:2]))
+    q = norm2(p) + r*r - 2.0*torch.abs(r)*k
+    res = torch.sqrt(q.clamp_min(0))
     return res.squeeze(-1)
 
 # modified from sdVerticalCapsule
@@ -116,14 +119,15 @@ def sdSegment(p: torch.Tensor, h: torch.Tensor):
     """
     (B,V,3), (B,1,1) -> (B,V)
     """
-    p[:,:,1] -= torch.clip(p[:,:,1], torch.zeros_like(h), torch.abs(h))
-    return norm(p).squeeze(-1)
+    p2 = p.clone()
+    p2[:,:,1:2] -= torch.clip(p[:,:,1:2], torch.zeros_like(h), torch.abs(h))
+    return norm(p2).squeeze(-1)
 
 def sdCappedCylinder(p: torch.Tensor, r: torch.Tensor, h: torch.Tensor):
     """
     (B,V,3), (B,1,1), (B,1,1) -> (B,V)
     """
-    d = torch.abs(cat(norm(p[:,:,:2]), p[:,:,2])) - torch.abs(cat(r, h))
+    d = torch.abs(cat(norm(p[:,:,:2]), p[:,:,2:])) - torch.abs(cat(r, h))
     res = torch.clip(torch.amax(d, dim=-1, keepdim=True), max=0) + norm(torch.clip(d, min=0))
     return res.squeeze(-1)
 
@@ -131,15 +135,15 @@ def sdCappedCone(p: torch.Tensor, h: torch.Tensor, r1: torch.Tensor, r2: torch.T
     """
     (B,V,3), (B,1,1), (B,1,1), (B,1,1) -> (B,V)
     """
-    h = torch.abs(h)
-    r1 = torch.abs(r1)
-    r2 = torch.abs(r2)
-    q = cat(norm(p[:,:,:2]), p[:,:,2])
-    k1 = cat(r2, h)
-    k2 = cat(r2-r1, 2.0*h)
-    ca = cat(q[:,:,0] - torch.minimum(q[:,:,0], torch.where(q[:,:,1] < 0.0, r1, r2)), abs(q[:,:,1]) - h)
+    ha = torch.abs(h)
+    r1a = torch.abs(r1)
+    r2a = torch.abs(r2)
+    q = cat(norm(p[:,:,:2]), p[:,:,2:])
+    k1 = cat(r2a, ha)
+    k2 = cat(r2a-r1a, 2.0*ha)
+    ca = cat(q[:,:,0:1] - torch.minimum(q[:,:,0:1], torch.where(q[:,:,1:2] < 0.0, r1a, r2a)), abs(q[:,:,1:2]) - ha)
     cb = q - k1 + k2*torch.clip(dot(k1-q, k2)/norm2(k2), 0, 1)
-    s = torch.where((cb[:,:,0] < 0) & (cb[:,:,1] < 0), -1, 1)
+    s = torch.where((ca[:,:,0:1] < 0) & (cb[:,:,1:2] < 0), -1, 1)
     res = s*torch.sqrt(torch.minimum(norm2(ca), norm2(cb)))
     return res.squeeze(-1)
 
@@ -162,16 +166,20 @@ sdf_functions = [
     (sdPoint, 0)
 ]
 
+@dataclass
 class SdfNode:
+    device: torch.device
     dtype: torch.dtype
     rotation: torch.Tensor # (1,1,3,3)
     translation: torch.Tensor # (1,1,3)
-    inflate: torch.Tensor # (1,1,1)
+    inflate: torch.Tensor # (1,1)
+    smoothing: torch.Tensor # (1,1)
     additive: bool
     func: Callable[..., torch.Tensor]
     params: torch.Tensor # tensors (n_params,1,1,1)
     
-    def random(self, std: float, p_add: float, func_weights: list[float], device: torch.device | str, dtype: torch.dtype):
+    @classmethod
+    def random(cls, std: float, p_add: float, func_weights: list[float], device: torch.device | str, dtype: torch.dtype) -> Self:
         """
             func (SdfCallback): Sdf function to use
             n_params (int): Number of additional parameters to the sdf
@@ -180,16 +188,31 @@ class SdfNode:
             func_weights (list[float]): Weights to apply when choosing underlying sdf function 
         """
         func, n_params = random.choices(sdf_functions, weights=func_weights)[0]
-        self.func = func
         
-        self.additive = random.random() < p_add
-        self.rotation = random_rotation(1, torch.pi, device, dtype)
-        self.translation = torch.normal(mean=0, std=std, size=(1, 1, 3), device=device, dtype=dtype)
-        self.inflate = torch.normal(mean=0, std=std, size=(1, 1, 1), device=device, dtype=dtype)
-        self.params = torch.normal(mean=0, std=std, size=(n_params, 1, 1, 1), device=device, dtype=dtype)
+        additive = random.random() < p_add
+        rotation = random_rotation(1, torch.pi, device, dtype)
+        translation = torch.normal(mean=0, std=std, size=(1, 1, 3), device=device, dtype=dtype)
+        inflate = torch.normal(mean=0, std=std, size=(1, 1), device=device, dtype=dtype)
+        smoothing = torch.normal(mean=0, std=std, size=(1, 1), device=device, dtype=dtype)
+        params = torch.normal(mean=0, std=std, size=(n_params, 1, 1, 1), device=device, dtype=dtype)
         
-        self.device = self.rotation.device
-        self.dtype = dtype
+        device = rotation.device
+        dtype = dtype
+        
+        return cls(device, dtype, rotation, translation, inflate, smoothing, additive, func, params)
+    
+    def clone(self):
+        return SdfNode(
+            self.device,
+            self.dtype,
+            self.rotation.clone(),
+            self.translation.clone(),
+            self.inflate.clone(),
+            self.smoothing.clone(),
+            self.additive,
+            self.func,
+            self.params.clone()
+        )
     
     def evaluate(self, p: torch.Tensor):
         """
@@ -207,5 +230,26 @@ class SdfNode:
         self.rotation = random_rotation(1, max_angle, device=self.device, dtype=self.dtype) @ self.rotation
         
         self.translation += torch.normal(mean=0, std=std, size=(1, 1, 3), device=self.device, dtype=self.dtype)
-        self.inflate += torch.normal(mean=0, std=std, size=(1, 1, 1), device=self.device, dtype=self.dtype)
+        self.smoothing += torch.normal(mean=0, std=std, size=(1, 1), device=self.device, dtype=self.dtype)
+        self.inflate += torch.normal(mean=0, std=std, size=(1, 1), device=self.device, dtype=self.dtype)
         self.params += torch.normal(mean=0, std=std, size=self.params.shape, device=self.device, dtype=self.dtype)
+    
+    @classmethod
+    def crossover(cls, a: Self, b: Self) -> Self:
+        """
+            Returns a child of two nodes of the same type
+        """
+        if a.func != b.func or a.additive != b.additive:
+            raise ValueError("Cannot apply crossover on different function types")
+        
+        return cls(
+            a.device,
+            a.dtype,
+            (a.rotation if random.random() < 0.5 else b.rotation).clone(),
+            random.choice([a.translation, b.translation, (a.translation + b.translation)/2]).clone(),
+            random.choice([a.inflate, b.inflate, (a.inflate + b.inflate)/2]).clone(),
+            random.choice([a.smoothing, b.smoothing, (a.smoothing + b.smoothing)/2]).clone(),
+            a.additive,
+            a.func,
+            random.choice([a.params, b.params, (a.params + b.params)/2]).clone()
+        )

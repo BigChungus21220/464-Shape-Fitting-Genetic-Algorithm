@@ -6,7 +6,7 @@ A genetic algorithm for shape fitting
 
 Given a pointcloud with normals, points `p_i`, normals `n_i`
 
-`fitness = sum(sdf(pi)^2 + k*(1 - dot(sdf_normal(p_i), normal(n_i)))^2) + num_objects`
+`fitness = sum(sdf(p_i)^2 + k*(1 - dot(sdf_normal(p_i), normal(n_i)))^2) + num_objects`
 
 Where the sdf is defined recusively by `sdf_{i+1} = smooth_union_or_difference(sdf_i, k_{i+1}, X_{i+1})`
 
