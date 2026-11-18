@@ -1,6 +1,20 @@
 A genetic algorithm for shape fitting
 
+## Setup
+
+Use python `3.12` or later
+
+Create a venv: `py -m venv .venv`
+
+Activate the venv: `.venc/Scripts/activate`
+
+Install the requirements: `pip install -r requirements.txt`
+
+Run the training `py src/train.py`
+
 ## Current strategy
+
+note: I'm now using a bunch of sdf functions and am just using sum of squared sdf as the fitness
 
 ### Fitness Function:
 
