@@ -14,6 +14,12 @@ Run the training `py src/train.py`
 
 ## TODO
 - Add a way to get an individual from the population and generate its sdf
+- Save reconstructed models
+- Compare reconstruction with other metrics
+- make a way to save and load model parameters
+- improve species tracking
+  - at the start each individual is its own species
+  - every iteration, use the best candidate from the previous species and the color distance to figure out which species each new individual is
 
 ## Current strategy
 
