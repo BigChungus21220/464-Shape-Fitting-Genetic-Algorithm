@@ -16,6 +16,7 @@ Run the training `py src/train.py`
 - Add a way to get an individual from the population and generate its sdf
 - Save reconstructed models
 - Compare reconstruction with other metrics
+  - try using true contour distance as loss
 - make a way to save and load model parameters
 - improve species tracking
   - at the start each individual is its own species
