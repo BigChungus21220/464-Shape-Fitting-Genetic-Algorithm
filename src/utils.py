@@ -1,30 +1,15 @@
 # model loading
 
 import torch
-import math
 
-def constrained_kmeans(x: torch.Tensor, k: int):
-    """Returns a list of index tensors grouping x into groups of size k
-
-    Args:
-        x (torch.Tensor): descriptors, (N, D)
-        k (int): group size
+def unique_indices(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    
-    clusters: list[torch.Tensor] = []
-    N, D = x.shape
-    mask = torch.zeros(N, device=x.device, dtype=torch.bool)
-    for i in range(N//k):
-        medoid = x[torch.argmax(mask), :]
-        rem = x[mask]
-        dist = torch.sum(rem*medoid, dim=-1)/torch.linalg.vector_norm(rem, dim=-1)
-        _, top_indices = torch.topk(dist, k=k)
-        mask[top_indices] = True
-        clusters.append(top_indices)
-        
-    clusters.append(torch.nonzero(mask))
-    
-    return clusters
+    Returns the indices of unique elements of x (no guaruntee on order of occurence) and the inverse mapping from x to the index list
+    """
+    unique_vals, inverse = torch.unique(x, return_inverse=True)
+    rep_idx = torch.empty(unique_vals.shape[0], dtype=torch.long, device=x.device)
+    rep_idx[inverse] = torch.arange(x.shape[0], device=x.device)
+    return rep_idx, inverse
 
 def norm(x: torch.Tensor) -> torch.Tensor:
     """
@@ -61,8 +46,8 @@ def quat_apply(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
         Rotated vectors of shape (..., 3).
     """
     
-    xyz = quat[..., :4]
-    w = quat[..., 4:]
+    xyz = quat[..., :3]
+    w = quat[..., 3:]
     
     t = 2*torch.linalg.cross(xyz, vec, dim=-1)
     return vec + w*t + torch.linalg.cross(xyz, t, dim=-1)
@@ -94,8 +79,8 @@ def quat_random(batch_size: int, max_angle: float, device: torch.device | str, d
     axis = torch.randn((batch_size, 3), device=device, dtype=dtype)
     axis = torch.nn.functional.normalize(axis, p=2, dim=-1)
 
-    half_theta = 0.5 * max_angle * torch.rand((batch_size,), device=device, dtype=dtype)
+    half_theta = 0.5*max_angle*torch.rand((batch_size, 1), device=device, dtype=dtype)
 
-    q = cat(axis * torch.sin(half_theta).unsqueeze(-1), torch.cos(half_theta))
+    q = cat(axis*torch.sin(half_theta), torch.cos(half_theta))
 
     return q.unsqueeze(1)

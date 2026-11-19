@@ -1,210 +1,367 @@
 # crossover / mutation operators, gene definitions
 
-from collections import defaultdict
+from utils import quat_multiply
 from collections.abc import Callable
 from typing import cast
 from utils import quat_random, quat_apply
 import torch
-from sdf import SdfNode, sdUnion, sdSubtraction, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCappedCone, sdPoint
-import random
+from sdf import sdUnion, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCappedCone, sdPoint
+import inspect
+from utils import unique_indices
+import torch.nn.functional as F
 
-def generate(min_nodes: int, max_nodes: int, device: torch.device | str, dtype: torch.dtype):
-    node_count = random.randint(min_nodes, max_nodes)
-    return [SdfNode.random(1.0, 0.8, [1.0]*6, device, dtype) for i in range(node_count)]
 
-def evaluate(x: list[SdfNode], verts: torch.Tensor):
-    sdf = torch.full((1, verts.shape[1]), torch.inf, device=verts.device, dtype=verts.dtype)
-    for node in x:
-        if node.additive:
-            sdf = sdUnion(sdf, node.evaluate(verts), node.smoothing)
-        else:
-            sdf = sdSubtraction(sdf, node.evaluate(verts), node.smoothing)
-        
-    return torch.sum(torch.square(sdf), dim=1)
-
-def mutate(x: list[SdfNode], p: float):
-    """
-    p is the probability of mutation.
-    since mutation occurs per node, there is an implicit bias towards shorter solutions
-    """
-    for node in x:
-        if random.random() < p:
-            node.mutate(0.01, 0.005)
-            
-    # also add a chance to swap nodes
-
-def crossover(a: list[SdfNode], b: list[SdfNode]):
-    child = []
-    for node in a:
-        if random.random() < 0.5:
-            child.append(node.clone())
-            
-    for node in b:
-        if random.random() < 0.5:
-            child.append(node.clone())
-            
-    return child
+SdfType = Callable[..., torch.Tensor]
 
 # functions taking a (B, V, 3) tensor of sample points, and n_params (B, 1, 1) tensors of input params returning a (B, V) tensor
 # function, n_params pairs
-sdf_functions = {
-    sdBox: 3,
-    sdRingSegment: 2,
-    sdSegment: 1,
-    sdCappedCylinder: 2,
-    sdCappedCone: 3,
-    sdPoint: 0
-}
+SDF_FUNCS: list[tuple[SdfType, int]] = [(func, len(inspect.signature(func).parameters) - 1) for func in [
+    sdBox,
+    sdRingSegment,
+    sdSegment,
+    sdCappedCylinder,
+    sdCappedCone,
+    sdPoint
+]]
+MAX_PARAMS = max(n for _, n in SDF_FUNCS)
+COLOR_DIM = 8
+COLOR_MUT = 0.001
+
 
 class Population:
     # P: population size
     # N: population node count
     # C: number of color dimensions
     # V: number of model vertices
+    # M: max param count
     
     device: torch.device
     dtype: torch.dtype
-    population: list[list[int]] # [P,] tensor, node indices
+    
+    population: list[torch.Tensor] # [P,] arr of tensor, node indices
     node_counts: torch.Tensor # (P,) int, node count of each individual
+    node_to_indiv: torch.Tensor # (N,) int, map back to population from nodes
     colors: torch.Tensor # (P, C) float, individual "colors", tracks speciation
 
-    ids: torch.Tensor # (N,) float, node ids, tracks uniqueness
+    func_ids: torch.Tensor # (N,) int, function id for each node
+    ids: torch.Tensor # (N,) int, node ids, tracks unique genes
     rotations: torch.Tensor # (N, 1, 4) float, quaternion rotation applied to input points
     translations: torch.Tensor # (N, 1, 3) float, offset applied to input points
     inflates: torch.Tensor # (N, 1) float, offset applied to the zero of the sdf
     smoothings: torch.Tensor # (N, 1) float, smoothing factors to apply
     signs: torch.Tensor # (N, 1) float {-1, 1}, whether each node is additive or subtractive
+    # `a (-) b = -(a (+) -b)`, where `a` and `b` are sdfs, and `(+)` and `(-)` are sdf union and sdf subtraction
     
-    # map node index to function type and param index
-    param_map: list[tuple[Callable[..., torch.Tensor], int]]
-    # map from sdf function type to parameters for all nodes with that type
-    params: dict[Callable[..., torch.Tensor], torch.Tensor]
-        
+    params: torch.Tensor # (N, M, 1, 1) params for each function (not all are used for every function type)
     
-    def __init__(self, pop_size: int, device: torch.device | str, dtype: torch.dtype):
-        std = 1.0
-        p_add = 0.8
-        min_nodes = 5
-        max_nodes = 20
-        func_weights = [1.0]*6
+    
+    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor], None], summary_count: int):
+        P = len(self.population)
+        for i in range(n_iter):
+            loss = self.evaluate(verts, max_nodes_per_batch).clamp_max(1e20)
+            
+            order = torch.argsort(loss, descending=False, stable=True)  # lowest loss first
+            fitness = torch.empty_like(loss)
+            fitness[order] = torch.arange(P, 0, -1, device=loss.device, dtype=loss.dtype)
+            
+            self.crossover(fitness) # top individual is at population[0]
+            self.mutate(mut_p, mut_std, mut_max_angle, keep=self.population[0])
+            
+            callback(i+1, n_iter, loss.topk(summary_count, largest=False)[0])
+    
+    
+    def __init__(self, 
+            pop_size: int, 
+            std: float,
+            p_add: float, 
+            min_nodes: int, 
+            max_nodes: int, 
+            func_weights: list[float], 
+            device: torch.device | str, 
+            dtype: torch.dtype
+        ):
         
         self.dtype = dtype
         self.device = torch.device(device)
+        weights = torch.tensor(func_weights, device=self.device, dtype=dtype)
         
         # figure out how many nodes each individual has
-        node_count_torch = torch.randint(min_nodes, max_nodes, (pop_size,), device='cpu')
-        node_count = cast(list[int], node_count_torch.tolist())
+        self.node_counts = torch.randint(min_nodes, max_nodes + 1, (pop_size,), device=self.device, dtype=torch.int64)
+        counts_cpu = self.node_counts.tolist()
+        self.node_to_indiv = torch.repeat_interleave(
+            torch.arange(pop_size, device=self.device, dtype=torch.int64),
+            self.node_counts,
+        )
+        N = self.node_to_indiv.shape[0]
         
-        nodes_end = cast(list[int], torch.cumsum(node_count_torch, dim=0)[:-1].tolist())
+        self.population = list(torch.split(torch.arange(N, device=self.device), counts_cpu))
+        self.colors = torch.randn((pop_size, COLOR_DIM), device=self.device, dtype=self.dtype)
         
-        # count total nodes in population
-        N = cast(int, torch.sum(node_count_torch).cpu().item())
-        
-        # generate transforms
-        self.ids = torch.rand(size=(N,), device=device, dtype=dtype)
-        self.rotations = quat_random(N, torch.pi, device=device, dtype=dtype)
-        self.translations = torch.normal(mean=0, std=std, size=(N, 1, 3), device=device, dtype=dtype)
-        self.inflates = torch.normal(mean=0, std=std, size=(N, 1), device=device, dtype=dtype)
-        self.smoothings = torch.normal(mean=0, std=std, size=(N, 1), device=device, dtype=dtype)
-        self.signs = torch.where(torch.rand((N, 1)) < p_add, 1.0, -1.0)
-        
-        # generate population
-        func_frequencies = {func: 0 for func, n_params in sdf_functions.items()}
-        self.population = []
-        self.node_counts = torch.tensor((pop_size,), device=device, dtype=torch.int32)
-        
-        # me when I have to use a loop in python :(
-        for i in range(pop_size):
-            # choose node types
-            funcs = random.choices(list(sdf_functions.keys()), weights=func_weights, k=node_count[i])
-            # get the param list indices
-            for func in funcs:
-                self.param_map.append((func, func_frequencies[func]))
-                func_frequencies[func] += 1
-                
-            self.node_counts[i] = node_count[i]
-            self.population.append(list(range(nodes_end[i] - node_count[i], nodes_end[i])))
-        
-        # generate function params
-        self.params = {
-            func: torch.normal(mean=0, std=std, size=(func_frequencies[func], n_params, 1, 1), device=device, dtype=dtype) 
-            for func, n_params in sdf_functions.items()
-        }
+        # generate per node stuff
+        self.func_ids = torch.multinomial(weights, N, replacement=True)
+        self.ids = torch.rand((N,), device=self.device, dtype=self.dtype)
+        self.rotations = quat_random(N, torch.pi, device=self.device, dtype=self.dtype)
+        self.translations = torch.normal(0.0, std, (N, 1, 3), device=self.device, dtype=self.dtype)
+        self.inflates = torch.normal(0.0, std, (N, 1), device=self.device, dtype=self.dtype)
+        self.smoothings = torch.normal(0.0, std,(N, 1), device=self.device, dtype=self.dtype)
+        self.signs = torch.where(torch.rand((N, 1)) < p_add, 1.0, -1.0).to(self.dtype).to(self.device)
+        self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
 
-    def evaluate(self, verts: torch.Tensor):
+
+    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int):
         """
-        (1, V, 3) -> (N, 1, 1)
+        Returns the loss of each individual on input verts
+        (1, V, 3) -> (P,)
         """
-        transformed = quat_apply(self.rotations, verts) - self.translations # (N, V, 3)
+        # This function has 8 indexing levels:
+        # Global individual indexing (P)
+        # Global node indexing (N)
+        # Batch individual indexing (B)
+        # Active batch individual indexing at step i (R)
+        # Node position within an individual (I)
+        # Batch node indexing (K)
+        # Unique batch node indexing (U)
+        # Unique batch node function indexing (H)
         
-        batches = self.gen_batches(16)
-        fitnesses = torch.tensor((len(self.population),), device=self.device, dtype=self.dtype)
+        V = verts.shape[1]
+        fitnesses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
         
-        for batch in batches:
-            points = transformed[batch]
+        for indiv_idx in self.gen_batches(max_nodes_per_batch): # B -> P
+            indivs = [self.population[i] for i in indiv_idx.tolist()] # B -> (I -> N)
             
-            batch_pop = [self.population[i] for i in batch]
+            bnodes = torch.cat(indivs) # K -> N
+            bcounts = torch.tensor([len(indiv) for indiv in indivs], device=self.device, dtype=torch.int64) # (B,)
+            boffsets = torch.cumsum(F.pad(bcounts[:-1], (1, 0)), dim=0) # B -> K
+            max_bcount = cast(int, bcounts.max().item())
             
-            # maps from func types to indices
-            func_nodes = defaultdict(list) # list of (index of node in batch, index of node in population, index of node in population func group)
-            batch_idx = 0
-            for indiv in batch_pop:
-                for node_idx in indiv:
-                    node_type, param_idx = self.param_map[node_idx]
-                    func_nodes[node_type].append((batch_idx, node_idx, param_idx))
-                    batch_idx += 1
+            unique_to_bnodes, bnodes_to_unique = unique_indices(self.ids[bnodes]) # U -> K, K -> U
+            unique_to_nodes = bnodes[unique_to_bnodes] # U -> N
+            U = unique_to_bnodes.numel()
             
-            node_count = sum([len(nodes) for nodes in func_nodes.values()])
+            func_ids = self.func_ids[unique_to_nodes] # (U,)
             
-            # eval each type
-            node_sdfs = torch.tensor((node_count, verts.shape[1]), device=self.device, dtype=self.dtype) # (L, V)
-            for func, nodes in func_nodes.items():
-                batch_idx, node_idx, param_idx = torch.tensor(nodes, device=self.device, dtype=torch.int32).unbind(1)
-                params = self.params[func][param_idx] # (H, P, 1, 1)
-                samples = points[node_idx] # (H, V, 3)
-                node_sdfs[batch_idx] = func(samples, *params)
+            transformed = quat_apply(self.rotations[unique_to_nodes], verts) - self.translations[unique_to_nodes] # (U, V, 3)
+            
+            node_sdfs = torch.empty((U, V), device=self.device, dtype=self.dtype) # (U, V)
+            for f_id, (func, n_params) in enumerate(SDF_FUNCS):
+                local_idx = (func_ids == f_id).nonzero(as_tuple=True)[0] # H -> U
+                if local_idx.numel() == 0:
+                    continue
                 
-            # get individual sdfs
-            indiv_sdfs = torch.tensor((len(batch_pop), verts.shape[1]), device=self.device, dtype=self.dtype) # (B, V)
-            batch_idx = 0
-            for i in range(len(batch_pop)):
-                sdf = torch.full((1, verts.shape[1]), torch.inf, device=self.device, dtype=self.dtype)
-                for node_idx in self.population[i]:
-                    indiv_sdfs[node_idx] = self.signs[node_idx]*sdUnion(sdf, self.signs[node_idx]*node_sdfs[batch_idx] - self.inflates[node_idx], self.smoothings[node_idx])
-                    batch_idx += 1
-                    
+                node_idx = unique_to_nodes[local_idx] # H -> N
+                params = self.params[node_idx, :n_params].unbind(1) # n_params x (H, 1, 1)
+                samples = transformed[local_idx] # (H, V, 3)
+                node_sdfs[local_idx] = func(samples, *params) # (H, V)
+            
+            signed_sdfs = self.signs[unique_to_nodes]*(node_sdfs - self.inflates[unique_to_nodes].abs())
+            
+            # step over all indiv nodes at once (probably faster at the end of the day, idk)
+            indiv_sdfs = signed_sdfs[bnodes_to_unique[boffsets]] # (B, V)
+            for i in range(1, max_bcount):
+                valid_idx = (i < bcounts).nonzero(as_tuple=True)[0] # B -> R
+                node_idx = bnodes[boffsets[valid_idx] + i] # R -> N
+                s = self.signs[node_idx]
+                k = self.smoothings[node_idx]
+                sdf = signed_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
+                indiv_sdfs[valid_idx] = s*sdUnion(indiv_sdfs[valid_idx], sdf, k)
+
             # take fitnesses
-            fitnesses[batch] = torch.sum(torch.square(indiv_sdfs), dim=1)
+            fitnesses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)
             
         return fitnesses
+    
         
+    def crossover(self, weights: torch.Tensor) -> None:
+        """
+        Applies crossover and keep best population update
+        Args:
+            weights (torch.Tensor): Per individual weights (fitness)
+        """
+        P = self.node_counts.shape[0]
+        old_offsets = torch.cumsum(F.pad(self.node_counts[:-1], (1, 0)), dim=0)  # (P,)
+        best_idx = weights.argmax()
+
+        # 1. Preserve the elite individual's exact nodes at child index 0
+        elite_count = int(self.node_counts[best_idx].item())
+        elite_nodes = (
+            torch.arange(elite_count, device=self.device, dtype=torch.int64)
+            + old_offsets[best_idx]
+        )
+        elite_children = torch.zeros(elite_count, device=self.device, dtype=torch.int64)
+        elite_keys = torch.zeros(elite_count, device=self.device, dtype=torch.int64)
+
+        if P == 1:
+            self.colors = self.colors[best_idx : best_idx + 1]
+            gather_idx = elite_nodes
+            new_node_to_indiv = elite_children
+        else:
+            num_children = P - 1
+
+            # 2. Sample parent pairs for the remaining P - 1 slots (child indices 1 .. P - 1)
+            a = torch.multinomial(weights, num_samples=num_children, replacement=True)
+            b = torch.multinomial(weights, num_samples=num_children, replacement=True)
+            self.colors = torch.cat(
+                [
+                    self.colors[best_idx : best_idx + 1],
+                    0.5 * (self.colors[a] + self.colors[b]),
+                ],
+                dim=0,
+            )
+
+            def sample_parent_nodes(parents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                counts = self.node_counts[parents]  # (P - 1,)
+                total = int(counts.sum().item())
+                # Shift child indices by +1 since index 0 is reserved for the elite individual
+                child_idx = (
+                    torch.repeat_interleave(
+                        torch.arange(num_children, device=self.device, dtype=torch.int64),
+                        counts,
+                    )
+                    + 1
+                )
+                local_offsets = torch.cumsum(F.pad(counts[:-1], (1, 0)), dim=0)
+                local_pos = torch.arange(
+                    total, device=self.device, dtype=torch.int64
+                ) - torch.repeat_interleave(local_offsets, counts)
+                old_node_idx = old_offsets[parents][child_idx - 1] + local_pos
+
+                keep = torch.rand(total, device=self.device) < 0.5
+                return child_idx[keep], old_node_idx[keep]
+
+            child_a, nodes_a = sample_parent_nodes(a)
+            child_b, nodes_b = sample_parent_nodes(b)
+
+            # 3. Combine elite nodes (key 0) with crossover nodes (keys >= 2)
+            keys = torch.cat([elite_keys, child_a * 2, child_b * 2 + 1])
+            selected_nodes = torch.cat([elite_nodes, nodes_a, nodes_b])
+            selected_children = torch.cat([elite_children, child_a, child_b])
+
+            # Guarantee every crossover child (indices >= 1) has at least 1 node
+            counts_check = torch.bincount(selected_children, minlength=P)
+            empty_children = (counts_check == 0).nonzero(as_tuple=True)[0]
+            if empty_children.numel() > 0:
+                fallback_nodes = old_offsets[a[empty_children - 1]]
+                keys = torch.cat([keys, empty_children * 2])
+                selected_nodes = torch.cat([selected_nodes, fallback_nodes])
+                selected_children = torch.cat([selected_children, empty_children])
+
+            order = torch.argsort(keys, stable=True)
+            gather_idx = selected_nodes[order]
+            new_node_to_indiv = selected_children[order]
+
+        # 4. Rebuild structural mappings and gather all per-node tensors
+        new_node_counts = torch.bincount(new_node_to_indiv, minlength=P)
+        N_new = gather_idx.shape[0]
+
+        self.node_counts = new_node_counts
+        self.node_to_indiv = new_node_to_indiv
+        self.population = list(
+            torch.split(
+                torch.arange(N_new, device=self.device, dtype=torch.int64),
+                new_node_counts.tolist(),
+            )
+        )
+
+        self.func_ids = self.func_ids[gather_idx]
+        self.ids = self.ids[gather_idx]
+        self.rotations = self.rotations[gather_idx]
+        self.translations = self.translations[gather_idx]
+        self.inflates = self.inflates[gather_idx]
+        self.smoothings = self.smoothings[gather_idx]
+        self.signs = self.signs[gather_idx]
+        self.params = self.params[gather_idx]
+    
+    
+    def mutate(self, p_mut: float, std: float, max_angle: float, keep: torch.Tensor | None = None):
+        """
+        Mutates all nodes with probability p_mut
+        Args:
+            p_mut (float): Probability each node mutates
+            std (float): Standard deviation of mutation magnitude
+            max_angle (float): Maximum change in rotation angle
+            keep (Tensor): Nodes indices which may not be mutate
+        """
+        # Since mutation occurs per node, there is an implicit bias towards shorter solutions
+        
+        mask = torch.empty(self.func_ids.shape, dtype=torch.bool).bernoulli_(p_mut)
+        if keep is not None:
+            mask[keep] = False
+        
+        idx = mask.nonzero(as_tuple=True)[0]
+        K = idx.numel()
+        
+        back_idx = torch.unique(self.node_to_indiv[idx])
+        D = back_idx.shape[0]
+        
+        # get the indices of pop which have changed
+        self.colors[back_idx] += 0.01*F.normalize(torch.randn((D, COLOR_DIM), device=self.device, dtype=self.dtype), p=2, dim=-1)
+        
+        self.ids[idx] = torch.rand((K,), device=self.device, dtype=self.dtype)
+        
+        r_offsets = quat_random(K, max_angle, device=self.device, dtype=self.dtype)
+        self.rotations[idx] = F.normalize(quat_multiply(self.rotations[idx], r_offsets), p=2, dim=-1)
+        
+        self.translations[idx] += torch.normal(0.0, std, (K, 1, 3), device=self.device, dtype=self.dtype)
+        self.inflates[idx] += torch.normal(0.0, std, (K, 1), device=self.device, dtype=self.dtype)
+        self.smoothings[idx] += torch.normal(0.0, std,(K, 1), device=self.device, dtype=self.dtype)
+        self.params[idx] += torch.normal(0.0, std, (K, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
+    
+    
     def gen_batches(self, k: int):
-        # assume individuals with a similar color have similar nodes
-        # try to group those first to maximize number of nodes evaluated in parallel
+        """
+        Greedily packs individuals into batches of at most `k` unique nodes,
+        maximizing shared nodes and breaking ties by minimum combined function types.
+        """
         
+        P = len(self.population)
+        ids_cpu = self.ids.cpu().tolist()
+        funcs_cpu = self.func_ids.cpu().tolist()
+
+        pop_ids: list[set[float]] = []
+        pop_funcs: list[set[int]] = []
+        for indiv in self.population:
+            node_indices = indiv.tolist()
+            pop_ids.append({ids_cpu[idx] for idx in node_indices})
+            pop_funcs.append({funcs_cpu[idx] for idx in node_indices})
+
+        unassigned = set(range(P))
         batches: list[torch.Tensor] = []
-        P, D = self.colors.shape
-        mask = torch.zeros(P, device=self.device, dtype=torch.bool)
-        while torch.any(mask):
-            # find a new medoid
-            medoid = self.colors[torch.argmax(mask), :]
-            rem = self.colors[mask]
-            # evaluate similarity
-            dist = torch.sum(rem*medoid, dim=-1)/torch.linalg.vector_norm(rem, dim=-1)
-                        
-            # add to group until full
-            batch = []
-            rem_nodes = k
-            size_mask = self.node_counts < rem_nodes
-            while torch.any(size_mask):
-                _, top_index = torch.max(dist[size_mask], dim=0)
-                batch.append(top_index)
-                rem_nodes -= self.node_counts[top_index]
-                size_mask = self.node_counts < rem_nodes
-                
-            batch_indices = torch.tensor(batch, device=self.device, dtype=torch.int32)
-            
-            mask[batch_indices] = True
-            batches.append(batch_indices)  
-                  
+
+        while unassigned:
+            # Start the batch with the unassigned individual that has the fewest function types
+            seed = min(unassigned, key=lambda i: len(pop_funcs[i]))
+            unassigned.remove(seed)
+
+            batch = [seed]
+            group_ids = set(pop_ids[seed])
+            group_funcs = set(pop_funcs[seed])
+
+            while len(group_ids) < k and unassigned:
+                best_cand: int | None = None
+                best_key: tuple[int, int] | None = None
+
+                for cand in unassigned:
+                    cand_ids = pop_ids[cand]
+                    new_nodes = len(cand_ids - group_ids)
+                    if len(group_ids) + new_nodes > k:
+                        continue
+
+                    shared_nodes = len(cand_ids) - new_nodes
+                    combined_types = len(group_funcs | pop_funcs[cand])
+                    key = (-shared_nodes, combined_types)
+
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_cand = cand
+
+                if best_cand is None:
+                    break
+
+                batch.append(best_cand)
+                unassigned.remove(best_cand)
+                group_ids.update(pop_ids[best_cand])
+                group_funcs.update(pop_funcs[best_cand])
+
+            batches.append(torch.tensor(batch, device=self.device, dtype=torch.int64))
+
         return batches
