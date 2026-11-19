@@ -55,8 +55,9 @@ class Population:
     params: torch.Tensor # (N, M, 1, 1) params for each function (not all are used for every function type)
     
     
-    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor], None], summary_count: int):
+    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor, torch.Tensor | None], None], summary_count: int):
         P = len(self.population)
+        projection = None
         for i in range(n_iter):
             loss = self.evaluate(verts, max_nodes_per_batch).clamp_max(1e20)
             
@@ -64,10 +65,54 @@ class Population:
             fitness = torch.empty_like(loss)
             fitness[order] = torch.arange(P, 0, -1, device=loss.device, dtype=loss.dtype)
             
+            # save the best models here to send to callback for image generation / storage
+            
             self.crossover(fitness) # top individual is at population[0]
             self.mutate(mut_p, mut_std, mut_max_angle, keep=self.population[0])
             
-            callback(i+1, n_iter, loss.topk(summary_count, largest=False)[0])
+            best_loss, best_idx = loss.topk(summary_count, largest=False)
+            
+            # wait for stuff to settle before choosing a color scheme
+            if i+1 == 10:
+                projection = self.get_color_projection()
+            if projection is not None:
+                callback(i+1, n_iter, best_loss, self.get_colors(*projection)[best_idx])
+            else:
+                callback(i+1, n_iter, best_loss, None)
+                
+                
+            
+            
+    def get_color_projection(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gets the axes to project to rgb
+        """
+        P, C = self.colors.shape
+
+        mean = self.colors.mean(dim=0, keepdim=True)
+        centered = self.colors - mean
+
+        _, _, Vh = torch.linalg.svd(centered, full_matrices=False)
+        components = cast(torch.Tensor, Vh[:3].T)  # (C, 3)
+
+        max_abs_idx = components.abs().argmax(dim=0)
+        signs = torch.sign(components[max_abs_idx, torch.arange(3, device=self.colors.device)])
+        components = components * torch.where(signs == 0, 1.0, signs)
+        return components, mean
+    
+    
+    def get_colors(self, components: torch.Tensor, mean: torch.Tensor) -> torch.Tensor:
+        """
+        Projects color genes to RGB values in [0, 1] using PCA.
+        """
+        
+        centered = self.colors - mean
+        rgb = centered @ components  # (P, 3)
+        rgb_min = rgb.amin(dim=0, keepdim=True)
+        rgb_max = rgb.amax(dim=0, keepdim=True)
+        rgb = (rgb - rgb_min) / (rgb_max - rgb_min).clip(0.0, 1.0)
+
+        return rgb
     
     
     def __init__(self, 
@@ -169,7 +214,7 @@ class Population:
             fitnesses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)
             
         return fitnesses
-    
+        
         
     def crossover(self, weights: torch.Tensor) -> None:
         """
