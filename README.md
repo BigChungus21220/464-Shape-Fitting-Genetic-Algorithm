@@ -6,7 +6,7 @@ Use python `3.12` or later
 
 Create a venv: `py -m venv .venv`
 
-Activate the venv: `.venc/Scripts/activate`
+Activate the venv: `.venv/Scripts/activate`
 
 Install the requirements: `pip install -r requirements.txt`
 
