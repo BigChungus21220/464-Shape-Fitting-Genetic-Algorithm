@@ -18,7 +18,15 @@ mesh: trimesh.Trimesh = trimesh.load('datasets/shapes/sofa.obj', force='mesh') #
 #   use more than 3 channels to improve distinguishability)
 #   then you can project back to 3 colors to get a viewable color via PCA
 
+# 0.2219 sum square sdf on couch is current record
 
+# new structure:
+# save node list for each node type
+# each individual indexes into node list
+# (color_idx, transform_idx, (node_type_idx, node_idx)...)
+# transforms (rotation, translation, inflate, additive, smoothing)
+# nodes (params)
+# save & apply rotations as quaternions
 
 POP_SIZE = 1000
 EPOCHS = 10000

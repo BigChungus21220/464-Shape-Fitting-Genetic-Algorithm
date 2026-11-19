@@ -6,32 +6,10 @@ from collections.abc import Callable
 import torch
 import random
 
+from utils import quat_apply, quat_multiply, norm, norm2, dot, cat
+
 # B: batch size (probably always 1 unless we do some real fancy optimizations)
 # V: num gt vertices
-
-def norm(x: torch.Tensor) -> torch.Tensor:
-    """
-    (...,N) -> (...,1)
-    """
-    return torch.linalg.vector_norm(x, dim=-1, keepdim=True)
-
-def norm2(x: torch.Tensor):
-    """
-    (...,N) -> (...,1)
-    """
-    return torch.sum(torch.square(x), dim=-1, keepdim=True)
-
-def dot(x: torch.Tensor, y: torch.Tensor):
-    """
-    (...,N), (...,N) -> (...,1)
-    """
-    return torch.sum(x*y, dim=-1, keepdim=True)
-
-def cat(*args: torch.Tensor):
-    """
-    (...,Ni)... -> (...,sum(Ni))
-    """
-    return torch.cat(args, dim=-1)
 
 def transform(p: torch.Tensor, t: torch.Tensor, R: torch.Tensor):
     """
@@ -157,14 +135,14 @@ def sdPoint(p: torch.Tensor):
 
 
     
-sdf_functions = [
-    (sdBox, 3),
-    (sdRingSegment, 2),
-    (sdSegment,1),
-    (sdCappedCylinder, 2),
-    (sdCappedCone, 3),
-    (sdPoint, 0)
-]
+sdf_functions = {
+    sdBox: 3,
+    sdRingSegment: 2,
+    sdSegment: 1,
+    sdCappedCylinder: 2,
+    sdCappedCone: 3,
+    sdPoint: 0
+}
 
 @dataclass
 class SdfNode:
