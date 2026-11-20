@@ -24,34 +24,46 @@ Run the training `py src/train.py`
 
 ## Current strategy
 
-note: I'm now using a bunch of sdf functions and am just using sum of squared sdf as the fitness
-
 ### Fitness Function:
 
-Given a pointcloud with normals, points `p_i`, normals `n_i`
+Given a pointcloud with points $p_i$ and normals $n_i$, the fitness of an individual is
 
-`fitness = sum(sdf(p_i)^2 + k*(1 - dot(sdf_normal(p_i), normal(n_i)))^2) + num_objects`
+$\text{Fitness}_j = \text{Rank}_j\left(L\right)$
 
-Where the sdf is defined recusively by `sdf_{i+1} = smooth_union_or_difference(sdf_i, k_{i+1}, X_{i+1})`
+$L_j = \sum\left(\text{sdf}_j\left(p_i\right)^2 + \lambda\left(1 - n_i \cdot \nabla\text{sdf}_j\left(p_i\right)\right)^2 \right)$
 
-and `X_i` is a rounded box sdf, defined by a center point (3d), size (3d), and edge radii (12d)
+Where the sdf of an individual is defined $\text{sdf}_j = \text{sdf}_{j, \text{C}_j}$
 
-and `k_i` (1d) is the smoothness of the boolean operation.
+$\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t}P_{j,i+1}\left(p_i\right)$
+
+$\text{sdf}_{j, t+1}\left(p_i\right) = s_{j,t}\text{smin}(\text{sdf}_{j,t}\left(p_i\right), s_{j,t}P_{j,i+1}\left(p_i\right), k_{j, t+1})$
+
+- $P_{j, t}: \mathbb{R}^3 \rightarrow \mathbb{R}$: a primitive sdf function
+
+- $s_{j,t} \in \left\{-1, 1\right\}$: the sign of the primitive solid
+
+- $k_{j,t} \in \mathbb{R}$: the smoothing parameter
+
+- $C_{j} \in \mathbb{N}$: the number of genes defined for this individual
 
 
 ### Genes:
 
-Each individual has two gene types
- - genes representing cuboids (18d for the parameters + 1 bool for union or difference)
- - genes representing intersection smoothness (1d)
+Each individual, $j$ has $C_j$ genes:
+1. $P_{j, t}$: primitive function
+2. $s_{j, t}$: primitive sign
+3. $X_{j, t}$: primitive specific parameters
+4. $q_{j, t}$: rotation
+5. $o_{j, t}$: translation
+6. $d_{j, t}$: inflate
+7. $k_{j, t}$: smoothing
+
 
 Mutation:
- - add a random new cube
- - add a random amount to a float parameter
+ - Add a random amount to a $X_{j, t}$, $q_{j, t}$, $o_{j, t}$, $d_{j, t}$, or $k_{j, t}$
 
 Crossover:
- - smoothness: choose one of the parents or the average
- - cube: random choice between parent cubes
+ - Each parent selects each of its genes with a 50% chance to pass of to the child
 
 
 ### Training:

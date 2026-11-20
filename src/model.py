@@ -29,6 +29,7 @@ COLOR_DIM = 8
 COLOR_MUT = 0.001
 
 
+
 @dataclass
 class SDFNode:
     func: SdfType
@@ -74,7 +75,6 @@ class SDFNode:
         
         return cls(func, id, rotation, translation, inflate, smoothing, sign, params)
         
-        
 
 @dataclass
 class SDF:
@@ -100,6 +100,7 @@ class SDF:
             [SDFNode.deserialize(node_dict, device, dtype) for node_dict in dict["nodes"]],
             torch.tensor(dict["color"], device=dev, dtype=dtype)
         )
+
 
 
 # ^ does that, but more and harder
