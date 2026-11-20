@@ -130,7 +130,7 @@ class Population:
     params: torch.Tensor # (N, M, 1, 1) params for each function (not all are used for every function type)
     
     
-    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor, torch.Tensor | None], None], summary_count: int):
+    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor, torch.Tensor | None, list[SDF]], None], summary_count: int):
         P = len(self.population)
         projection = None
         for i in range(n_iter):
