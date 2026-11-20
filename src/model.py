@@ -1,8 +1,9 @@
 # crossover / mutation operators, gene definitions
 
+from dataclasses import dataclass
 from utils import quat_multiply
 from collections.abc import Callable
-from typing import cast
+from typing import cast, Any
 from utils import quat_random, quat_apply
 import torch
 from sdf import sdUnion, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCappedCone, sdPoint
@@ -28,6 +29,80 @@ COLOR_DIM = 8
 COLOR_MUT = 0.001
 
 
+@dataclass
+class SDFNode:
+    func: SdfType
+    id: torch.Tensor # (1,)
+    rotation: torch.Tensor # (1, 1, 4)
+    translation: torch.Tensor # (1, 1, 3)
+    inflate: torch.Tensor # (1, 1)
+    smoothing: torch.Tensor # (1, 1)
+    sign: torch.Tensor # (1, 1)
+    params: torch.Tensor # (1, C, 1, 1)
+    
+    def evaluate(self, verts: torch.Tensor):
+        transformed = quat_apply(self.rotation, verts) - self.translation
+        return (self.func(transformed, self.params.unbind(1)) - self.inflate)
+    
+    def serialize(self):
+        func_name = self.func.__name__
+        return {
+            "type": func_name,
+            "id": self.id.tolist(),
+            "rotation": self.rotation.tolist(),
+            "translation": self.translation.tolist(),
+            "inflate": self.inflate.tolist(),
+            "smoothing": self.smoothing.tolist(),
+            "sign": self.sign.tolist(),
+            "params": self.params.tolist()
+        }
+    
+    @classmethod
+    def deserialize(cls, dict: dict[str, Any], device: torch.device | str, dtype: torch.dtype):
+        func = next((func for func, n_params in SDF_FUNCS if func.__name__ == dict["type"]), None)
+        if func is None:
+            raise ValueError(f"No function matching type '{dict["type"]}'")
+        dev = torch.device(device)
+        
+        id = torch.tensor(dict["id"], device=dev, dtype=dtype)
+        rotation = torch.tensor(dict["rotation"], device=dev, dtype=dtype)
+        translation = torch.tensor(dict["translation"], device=dev, dtype=dtype)
+        inflate = torch.tensor(dict["inflate"], device=dev, dtype=dtype)
+        smoothing = torch.tensor(dict["smoothing"], device=dev, dtype=dtype)
+        sign = torch.tensor(dict["sign"], device=dev, dtype=dtype)
+        params = torch.tensor(dict["params"], device=dev, dtype=dtype)
+        
+        return cls(func, id, rotation, translation, inflate, smoothing, sign, params)
+        
+        
+
+@dataclass
+class SDF:
+    nodes: list[SDFNode]
+    color: torch.Tensor # (COLOR_DIM,)
+    
+    def __call__(self, verts: torch.Tensor):
+        sdf = self.nodes[0].evaluate(verts)
+        for i in range(1, len(self.nodes)):
+            node = self.nodes[i]
+            sdf = node.sign*sdUnion(sdf, node.sign*node.evaluate(verts), node.smoothing)
+            
+    def serialize(self):
+        return {
+            "nodes": [node.serialize() for node in self.nodes],
+            "color": self.color.tolist()
+        }
+    
+    @classmethod
+    def deserialize(cls, dict: dict[str, Any], device: torch.device | str, dtype: torch.dtype):
+        dev = torch.device(device)
+        return cls(
+            [SDFNode.deserialize(node_dict, device, dtype) for node_dict in dict["nodes"]],
+            torch.tensor(dict["color"], device=dev, dtype=dtype)
+        )
+
+
+# ^ does that, but more and harder
 class Population:
     # P: population size
     # N: population node count
@@ -65,23 +140,21 @@ class Population:
             fitness = torch.empty_like(loss)
             fitness[order] = torch.arange(P, 0, -1, device=loss.device, dtype=loss.dtype)
             
-            # save the best models here to send to callback for image generation / storage
+            best_loss, best_idx = loss.topk(summary_count, largest=False)
+            
+            best = [self.get_individual(idx) for idx in best_idx]
             
             self.crossover(fitness) # top individual is at population[0]
             self.mutate(mut_p, mut_std, mut_max_angle, keep=self.population[0])
-            
-            best_loss, best_idx = loss.topk(summary_count, largest=False)
             
             # wait for stuff to settle before choosing a color scheme
             if i+1 == 10:
                 projection = self.get_color_projection()
             if projection is not None:
-                callback(i+1, n_iter, best_loss, self.get_colors(*projection)[best_idx])
+                callback(i+1, n_iter, best_loss, self.get_colors(*projection)[best_idx], best)
             else:
-                callback(i+1, n_iter, best_loss, None)
+                callback(i+1, n_iter, best_loss, None, best)
                 
-                
-            
             
     def get_color_projection(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -114,6 +187,26 @@ class Population:
 
         return rgb
     
+    
+    def get_individual(self, idx: int | torch.Tensor):
+        """Returns an individual sdf"""
+        nodes = []
+        for node in self.population[idx]:
+            func, n_params = SDF_FUNCS[self.func_ids[node]]
+            node_slice = slice(node, node+1)
+            nodes.append(SDFNode(
+                func, 
+                self.ids[node_slice], 
+                self.rotations[node_slice], 
+                self.translations[node_slice], 
+                self.inflates[node_slice], 
+                self.smoothings[node_slice], 
+                self.signs[node_slice],
+                self.params[node_slice, :n_params]
+            ))
+        
+        return SDF(nodes, self.colors[idx])
+        
     
     def __init__(self, 
             pop_size: int, 

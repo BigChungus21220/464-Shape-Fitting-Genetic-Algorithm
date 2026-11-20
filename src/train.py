@@ -2,7 +2,7 @@
 
 import torch
 import trimesh
-from model import Population
+from model import Population, SDF
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -23,14 +23,14 @@ verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
 
 # 0.2219 sum square sdf on couch is current record
 
-n_iter = 10000
+n_iter = 500
 summary_count = 10
 
 loss_history = np.zeros((n_iter, summary_count))
 color_history = np.zeros((n_iter, summary_count, 3))
 fig_path = Path("output/loss_history.png")
 
-def callback(iter: int, max_iter: int, losses: torch.Tensor, colors: torch.Tensor | None):
+def callback(iter: int, max_iter: int, losses: torch.Tensor, colors: torch.Tensor | None, sdfs: list[SDF]):
     print(f"Epoch {iter}/{max_iter}: [{", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])}]")
     loss_history[iter-1] = losses.cpu().numpy()
     if colors is not None:
