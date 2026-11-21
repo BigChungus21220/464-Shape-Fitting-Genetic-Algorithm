@@ -32,7 +32,7 @@ $\text{Fitness}_j = \text{Rank}_j\left(L\right)$
 
 $L_j = \sum\left(\text{sdf}_j\left(p_i\right)^2 + \lambda\left(1 - n_i \cdot \nabla\text{sdf}_j\left(p_i\right)\right)^2 \right)$
 
-Where the sdf of an individual is defined $\text{sdf}_j = \text{sdf}_{j, C_j}$
+Where the sdf of an individual is defined $`\text{sdf}_j = \text{sdf}_{j, C_j}`$
 
 $\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t} P_{j,i+1}\left(p_i\right)$
 
