@@ -32,15 +32,15 @@ $\text{Fitness}_j = \text{Rank}_j\left(L\right)$
 
 $L_j = \sum\left(\text{sdf}_j\left(p_i\right)^2 + \lambda\left(1 - n_i \cdot \nabla\text{sdf}_j\left(p_i\right)\right)^2 \right)$
 
-Where the sdf of an individual is defined $\text{sdf}_j = \text{sdf}_{j, \text{C}_j}$
+Where the sdf of an individual is defined $\text{sdf}_j = \text{sdf}_{j, C_j}$
 
-$\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t}P_{j,i+1}\left(p_i\right)$
+$\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t} P_{j,i+1}\left(p_i\right)$
 
-$\text{sdf}_{j, t+1}\left(p_i\right) = s_{j,t}\text{smin}(\text{sdf}_{j,t}\left(p_i\right), s_{j,t}P_{j,i+1}\left(p_i\right), k_{j, t+1})$
+$\text{sdf}_{j, t+1}\left(p_i\right) = s_{j,t} \text{smin}(\text{sdf}_{j,t}\left(p_i\right), s_{j,t}P_{j,i+1}\left(p_i\right), k_{j, t+1})$
 
 - $P_{j, t}: \mathbb{R}^3 \rightarrow \mathbb{R}$: a primitive sdf function
 
-- $s_{j,t} \in \left\{-1, 1\right\}$: the sign of the primitive solid
+- $s_{j,t} \in \{-1, 1\}$: the sign of the primitive solid
 
 - $k_{j,t} \in \mathbb{R}$: the smoothing parameter
 
