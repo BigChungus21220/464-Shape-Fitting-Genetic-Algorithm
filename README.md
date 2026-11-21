@@ -28,35 +28,35 @@ Run the training `py src/train.py`
 
 Given a pointcloud with points $p_i$ and normals $n_i$, the fitness of an individual is
 
-$\text{Fitness}_j = \text{Rank}_j\left(L\right)$
+$`\text{Fitness}_j = \text{Rank}_j\left(L\right)`$
 
-$L_j = \sum\left(\text{sdf}_j\left(p_i\right)^2 + \lambda\left(1 - n_i \cdot \nabla\text{sdf}_j\left(p_i\right)\right)^2 \right)$
+$`L_j = \sum\left(\text{sdf}_j\left(p_i\right)^2 + \lambda\left(1 - n_i \cdot \nabla\text{sdf}_j\left(p_i\right)\right)^2 \right)`$
 
 Where the sdf of an individual is defined $`\text{sdf}_j = \text{sdf}_{j, C_j}`$
 
-$\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t} P_{j,i+1}\left(p_i\right)$
+$`\text{sdf}_{j, 1}\left(p_i\right) = s_{j,t} P_{j,i+1}\left(p_i\right)`$
 
-$\text{sdf}_{j, t+1}\left(p_i\right) = s_{j,t} \text{smin}(\text{sdf}_{j,t}\left(p_i\right), s_{j,t}P_{j,i+1}\left(p_i\right), k_{j, t+1})$
+$`\text{sdf}_{j, t+1}\left(p_i\right) = s_{j,t} \text{smin}(\text{sdf}_{j,t}\left(p_i\right), s_{j,t}P_{j,i+1}\left(p_i\right), k_{j, t+1})`$
 
-- $P_{j, t}: \mathbb{R}^3 \rightarrow \mathbb{R}$: a primitive sdf function
+- $`P_{j, t}: \mathbb{R}^3 \rightarrow \mathbb{R}`$: a primitive sdf function
 
-- $s_{j,t} \in \{-1, 1\}$: the sign of the primitive solid
+- $`s_{j,t} \in \{-1, 1\}`$: the sign of the primitive solid
 
-- $k_{j,t} \in \mathbb{R}$: the smoothing parameter
+- $`k_{j,t} \in \mathbb{R}`$: the smoothing parameter
 
-- $C_{j} \in \mathbb{N}$: the number of genes defined for this individual
+- $`C_{j} \in \mathbb{N}`$: the number of genes defined for this individual
 
 
 ### Genes:
 
 Each individual, $j$ has $C_j$ genes:
-1. $P_{j, t}$: primitive function
-2. $s_{j, t}$: primitive sign
-3. $X_{j, t}$: primitive specific parameters
-4. $q_{j, t}$: rotation
-5. $o_{j, t}$: translation
-6. $d_{j, t}$: inflate
-7. $k_{j, t}$: smoothing
+1. $`P_{j, t}`$: primitive function
+2. $`s_{j, t}`$: primitive sign
+3. $`X_{j, t}`$: primitive specific parameters
+4. $`q_{j, t}`$: rotation
+5. $`o_{j, t}`$: translation
+6. $`d_{j, t}`$: inflate
+7. $`k_{j, t}`$: smoothing
 
 
 Mutation:
