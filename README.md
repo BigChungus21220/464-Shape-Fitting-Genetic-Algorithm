@@ -70,5 +70,19 @@ Crossover:
  - use keep best + weighted choice
 
 
+## Parameter Search & Ablasion
+
+### Parameter Search
+ - Run a grid search over population, mutation rate(s)
+ - Save the best result to a table, then apply a blur in population, mutation rate space to reduce noise
+
+### Ablasion
+ - Test the model with subsets of the primatives rather than the full set
+ - Test the model without smooth boolean operations
+ - Test with intermediate gradient descent
+   - Apply several steps of gradient descent to the population each epoch (without changing the genes)
+   - Score each individual based on the descended score
+   - At the end, run deeper gradient descent on the best individual for the final model
+
 
 
