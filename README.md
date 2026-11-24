@@ -100,8 +100,3 @@ https://doi.org/10.1016/j.cad.2016.01.001
  - explict reconstruction length penalty
 https://doi.org/10.1007/978-3-030-94893-1_3
 https://doi.org/10.1109/cvpr.2018.00578
-
-
-need to find out what the best selection algorithm is
-
-
