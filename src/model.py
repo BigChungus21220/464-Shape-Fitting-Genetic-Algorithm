@@ -26,7 +26,7 @@ SDF_FUNCS: list[tuple[SdfType, int]] = [(func, len(inspect.signature(func).param
 ]]
 MAX_PARAMS = max(n for _, n in SDF_FUNCS)
 COLOR_DIM = 8
-COLOR_MUT = 0.001
+COLOR_MUT = 0.01
 
 
 
@@ -211,11 +211,9 @@ class Population:
         # update species colors to the fittest member of each species
         ordered_species = species_labels[fitness_order]  # (P,)
 
-        # Find the first occurrence of each species along `order` (= its fittest member)
-        # Scatter in reverse so the earliest index in `order` wins
-        rev_idx = torch.arange(P-1, -1, -1, device=self.device)
-        first_pos_in_order = torch.empty(num_species, device=self.device, dtype=torch.int64)
-        first_pos_in_order[ordered_species[rev_idx]] = rev_idx
+        # Find the first occurrence of each species along `order`
+        first_pos_in_order = torch.full((num_species,), P, device=self.device, dtype=torch.int64)
+        first_pos_in_order.scatter_reduce_(0, ordered_species, torch.arange(P, device=self.device), reduce='amin')
         
         sorted_first_pos, old_to_new_species = torch.sort(first_pos_in_order)
         inv_map = torch.empty_like(old_to_new_species)
@@ -305,7 +303,7 @@ class Population:
         # Unique batch node function indexing (H)
         
         V = verts.shape[1]
-        fitnesses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
+        losses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
         
         for indiv_idx in self.gen_batches(max_nodes_per_batch): # B -> P
             indivs = [self.population[i] for i in indiv_idx.tolist()] # B -> (I -> N)
@@ -346,10 +344,10 @@ class Population:
                 sdf = signed_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
                 indiv_sdfs[valid_idx] = s*sdUnion(indiv_sdfs[valid_idx], sdf, k)
 
-            # take fitnesses
-            fitnesses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)
+            # take losses
+            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)
             
-        return fitnesses
+        return losses
         
         
     def crossover(self, weights: torch.Tensor, keep: torch.Tensor) -> None:
@@ -475,11 +473,10 @@ class Population:
         idx = mask.nonzero(as_tuple=True)[0]
         K = idx.numel()
         
+        # get the indices of pop which have changed
         back_idx = torch.unique(self.node_to_indiv[idx])
         D = back_idx.shape[0]
-        
-        # get the indices of pop which have changed
-        self.colors[back_idx] += 0.01*F.normalize(torch.randn((D, COLOR_DIM), device=self.device, dtype=self.dtype), p=2, dim=-1)
+        self.colors[back_idx] += F.normalize(torch.normal(0.0, COLOR_MUT, (D, COLOR_DIM), device=self.device, dtype=self.dtype), p=2, dim=-1)
         
         self.ids[idx] = torch.rand((K,), device=self.device, dtype=self.dtype)
         
