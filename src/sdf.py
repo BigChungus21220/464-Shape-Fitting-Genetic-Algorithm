@@ -1,8 +1,42 @@
 # sdf definitions and operators
 
+from collections.abc import Callable
 import torch
 
 from utils import norm, norm2, dot, cat
+
+def estimateNormal(sdf: Callable[[torch.Tensor], torch.Tensor], p: torch.Tensor, eps: float = 1e-5):
+    """Estimates the normal of a scalar field
+
+    Args:
+        sdf (Callable[[torch.Tensor], torch.Tensor]): (B, V, 3) -> (B, V)
+        p (torch.Tensor): (B, V, 3)
+        eps (float, optional): measurment step. Defaults to 1e-5.
+
+    Returns:
+        torch.Tensor: (B, V, 3) normals (unit length)
+    """
+    B, V, _ = p.shape
+    
+    offsets = torch.tensor([
+        [ eps, 0.0, 0.0],
+        [-eps, 0.0, 0.0],
+        [0.0,  eps, 0.0],
+        [0.0, -eps, 0.0],
+        [0.0, 0.0,  eps],
+        [0.0, 0.0, -eps],
+    ], device=p.device, dtype=p.dtype) # (6, 3)
+    
+    # (B, 6, V, 3) -> (B, 6 * V, 3)
+    pts = (p[:, None, :, :] + offsets[None, :, None, :]).reshape(B, 6 * V, 3)
+
+    # (B, 6 * V) -> (B, 6, V)
+    vals = sdf(pts).view(B, 6, V)
+
+    # Central differences: (+offset) - (-offset) -> (B, 3, V) -> (B, V, 3)
+    grad = (vals[:, 0::2] - vals[:, 1::2]).transpose(1, 2)
+
+    return grad / norm(grad)
 
 
 def sdPoint(p: torch.Tensor):
