@@ -31,7 +31,9 @@ color_history = np.zeros((n_iter, summary_count, 3))
 fig_path = Path("output/loss_history.png")
 
 def callback(iter: int, max_iter: int, losses: torch.Tensor, colors: torch.Tensor | None, sdfs: list[SDF]):
-    print(f"Epoch {iter}/{max_iter}: [{", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])}]")
+    summary = ", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])
+    node_count = sum(len(sdf.nodes) for sdf in sdfs)/len(sdfs)
+    print(f"Epoch {iter}/{max_iter} -- avg nodes: {node_count}, loss: [{summary}]")
     loss_history[iter-1] = losses.cpu().numpy()
     if colors is not None:
         color_history[iter-1] = colors.cpu().numpy()
