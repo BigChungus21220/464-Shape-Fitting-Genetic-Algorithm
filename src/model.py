@@ -82,12 +82,14 @@ class SDF:
     color: torch.Tensor # (COLOR_DIM,)
     
     def __call__(self, verts: torch.Tensor):
+        """Evaluates the function at verts, (B, V, 3) -> (B, V)"""
         sdf = self.nodes[0].evaluate(verts)
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
             sdf = node.sign*sdUnion(sdf, node.sign*node.evaluate(verts), node.smoothing)
             
     def serialize(self):
+        """Converts to a json serializable object"""
         return {
             "nodes": [node.serialize() for node in self.nodes],
             "color": self.color.tolist()
@@ -95,6 +97,7 @@ class SDF:
     
     @classmethod
     def deserialize(cls, dict: dict[str, Any], device: torch.device | str, dtype: torch.dtype):
+        """Converts from a json object to an SDF"""
         dev = torch.device(device)
         return cls(
             [SDFNode.deserialize(node_dict, device, dtype) for node_dict in dict["nodes"]],
@@ -133,6 +136,21 @@ class Population:
     
     def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
               do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor | None, list[SDF]], None], summary_count: int):
+        """Main training loop
+
+        Args:
+            verts (torch.Tensor): Target model to match
+            n_iter (int): Max iterations
+            max_nodes_per_batch (int): Maximum nodes per batch, only affects performance
+            mut_p (float): Probability each node recieves mutation
+            mut_std (float): Standard deviation of node mutation
+            mut_max_angle (float): Maximum range of rotation mutation
+            species_thresh (float): Threshold for color similarity for two individuals to be considered the same species
+            do_fitness_sharing (bool): Whether to apply a fitness sharing correction
+            keep_best (int): How many of the best individuals to keep in the population
+            callback (Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor | None, list[SDF]], None]): Callback function
+            summary_count (int): Number of species to report on each time callback is called
+        """
         
         P = len(self.population)
         
@@ -166,6 +184,7 @@ class Population:
     
     
     def update_species(self, fitness_order: torch.Tensor, colors: torch.Tensor, thresh: float):
+        """Tracks species updates"""
         P = len(self.population)
         
         # match each individual to its nearest existing species

@@ -50,7 +50,7 @@ def callback(iter: int, max_iter: int, population: int, species_count: int, spec
     
     loss_summary = ", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])
     node_count = sum(len(sdf.nodes) for sdf in sdfs)/len(sdfs)
-    print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nloss: {loss_summary}\n")
+    print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nLoss: {loss_summary}\n")
     loss_history[iter-1] = losses.cpu().numpy()
     if colors is not None:
         color_history[iter-1] = colors.cpu().numpy()
