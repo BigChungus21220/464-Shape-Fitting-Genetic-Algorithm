@@ -120,7 +120,7 @@ class Population:
     colors: torch.Tensor # (P, C) float, individual "colors", tracks speciation
 
     func_ids: torch.Tensor # (N,) int, function id for each node
-    ids: torch.Tensor # (N,) int, node ids, tracks unique genes
+    ids: torch.Tensor # (N,) float, node ids, tracks unique genes
     rotations: torch.Tensor # (N, 1, 4) float, quaternion rotation applied to input points
     translations: torch.Tensor # (N, 1, 3) float, offset applied to input points
     inflates: torch.Tensor # (N, 1) float, offset applied to the zero of the sdf
@@ -131,62 +131,85 @@ class Population:
     params: torch.Tensor # (N, M, 1, 1) params for each function (not all are used for every function type)
     
     
-    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, callback: Callable[[int, int, torch.Tensor, torch.Tensor | None, list[SDF]], None], summary_count: int):
+    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
+              do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor | None, list[SDF]], None], summary_count: int):
+        
         P = len(self.population)
-        projection = None
+        
+        species_labels = torch.arange(P, device=self.device, dtype=torch.int64) # (P,) species index for each individual
+        species_colors = self.colors.clone() # (S, C), species color per species, sorted by fitness of best member
+        species_reps = species_labels.clone() # (S,) population index of best member of each species
+        
         for i in range(n_iter):
             loss = self.evaluate(verts, max_nodes_per_batch).clamp_max(1e20)
             
-            order = torch.argsort(loss, descending=False, stable=True)  # lowest loss first
+            # ranking based fitness (maybe not optimal, research needed)
+            order = torch.argsort(loss, descending=False, stable=True)
             fitness = torch.empty_like(loss)
             fitness[order] = torch.arange(P, 0, -1, device=loss.device, dtype=loss.dtype)
             
-            best_loss, best_idx = loss.topk(summary_count, largest=False)
+            # species tracking
+            species_colors, species_labels, species_reps, species_counts = self.update_species(order, species_colors, species_thresh)
             
-            best = [self.get_individual(idx) for idx in best_idx]
+            # trigger callback
+            callback(i+1, n_iter, P, species_reps.numel(), species_counts, loss[species_reps[:summary_count]], 
+                     species_colors[:summary_count, :3].clip(0.0, 1.0), [self.get_individual(i) for i in species_reps])
             
-            self.crossover(fitness) # top individual is at population[0]
-            self.mutate(mut_p, mut_std, mut_max_angle, keep=self.population[0])
+            # strategy to preserve diversity (suggested by LLM, research needed)
+            if do_fitness_sharing:
+                fitness /= species_counts[species_labels].to(self.dtype)
             
-            # wait for stuff to settle before choosing a color scheme
-            if i+1 == 10:
-                projection = self.get_color_projection()
-            if projection is not None:
-                callback(i+1, n_iter, best_loss, self.get_colors(*projection)[best_idx], best)
-            else:
-                callback(i+1, n_iter, best_loss, None, best)
-                
-            
-    def get_color_projection(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Gets the axes to project to rgb
-        """
-        P, C = self.colors.shape
-
-        mean = self.colors.mean(dim=0, keepdim=True)
-        centered = self.colors - mean
-
-        _, _, Vh = torch.linalg.svd(centered, full_matrices=False)
-        components = cast(torch.Tensor, Vh[:3].T)  # (C, 3)
-
-        max_abs_idx = components.abs().argmax(dim=0)
-        signs = torch.sign(components[max_abs_idx, torch.arange(3, device=self.colors.device)])
-        components = components * torch.where(signs == 0, 1.0, signs)
-        return components, mean
+            keep = order[:keep_best]
+            self.crossover(fitness, keep)
+            # kept individuals are placed at population[:|keep|]
+            self.mutate(mut_p, mut_std, mut_max_angle, keep=torch.arange(keep.numel()))
     
     
-    def get_colors(self, components: torch.Tensor, mean: torch.Tensor) -> torch.Tensor:
-        """
-        Projects color genes to RGB values in [0, 1] using PCA.
-        """
+    def update_species(self, fitness_order: torch.Tensor, colors: torch.Tensor, thresh: float):
+        P = len(self.population)
         
-        centered = self.colors - mean
-        rgb = centered @ components  # (P, 3)
-        rgb_min = rgb.amin(dim=0, keepdim=True)
-        rgb_max = rgb.amax(dim=0, keepdim=True)
-        rgb = (rgb - rgb_min) / (rgb_max - rgb_min).clip(0.0, 1.0)
+        # match each individual to its nearest existing species
+        dists = torch.cdist(colors, self.colors) # (S, P)
+        species_distance, nearest_species = torch.min(dists, dim=0) # (P,), (P,)
 
-        return rgb
+        surviving_mask = species_distance < thresh
+        new_idx = (~surviving_mask).nonzero(as_tuple=True)[0] # (N_new,)
+        
+        # compact surviving species IDs to contiguous [0, S_surv)
+        surviving_old_ids = nearest_species[surviving_mask]
+        _, compact_surviving_labels = torch.unique(surviving_old_ids, return_inverse=True)
+        num_surviving = int(compact_surviving_labels.max().item()) + 1 if surviving_old_ids.numel() > 0 else 0
+
+        species_labels = torch.empty(P, device=self.device, dtype=torch.int64)
+        species_labels[surviving_mask] = compact_surviving_labels
+        species_labels[new_idx] = num_surviving + torch.arange(
+            new_idx.numel(), device=self.device, dtype=torch.int64
+        )
+
+        num_species = num_surviving + new_idx.numel()
+        species_counts = torch.bincount(species_labels, minlength=num_species)
+
+        # update species colors to the fittest member of each species
+        ordered_species = species_labels[fitness_order]  # (P,)
+
+        # Find the first occurrence of each species along `order` (= its fittest member)
+        # Scatter in reverse so the earliest index in `order` wins
+        rev_idx = torch.arange(P-1, -1, -1, device=self.device)
+        first_pos_in_order = torch.empty(num_species, device=self.device, dtype=torch.int64)
+        first_pos_in_order[ordered_species[rev_idx]] = rev_idx
+        
+        sorted_first_pos, old_to_new_species = torch.sort(first_pos_in_order)
+        inv_map = torch.empty_like(old_to_new_species)
+        inv_map[old_to_new_species] = torch.arange(num_species, device=self.device)
+
+        # Population indices of representatives, ordered by fitness descending:
+        reps = fitness_order[sorted_first_pos]  # (S,)
+
+        colors = self.colors[reps]
+        counts = species_counts[old_to_new_species]
+        labels = inv_map[species_labels]
+        
+        return colors, labels, reps, counts
     
     
     def get_individual(self, idx: int | torch.Tensor):
@@ -310,76 +333,79 @@ class Population:
         return fitnesses
         
         
-    def crossover(self, weights: torch.Tensor) -> None:
+    def crossover(self, weights: torch.Tensor, keep: torch.Tensor) -> None:
         """
-        Applies crossover and keep best population update
+        Applies crossover and preserves specified individuals at the start of the population.
         Args:
-            weights (torch.Tensor): Per individual weights (fitness)
+            weights (torch.Tensor): Per-individual selection weights (P,)
+            keep (torch.Tensor): Indices of individuals to preserve at slots 0..K-1 (K,)
         """
         P = self.node_counts.shape[0]
+        keep = keep.to(device=self.device, dtype=torch.int64)
+        K = keep.numel()
+        if K > P:
+            raise ValueError(f"Cannot keep {K} individuals in a population of size {P}.")
+
         old_offsets = torch.cumsum(F.pad(self.node_counts[:-1], (1, 0)), dim=0)  # (P,)
-        best_idx = weights.argmax()
 
-        # 1. Preserve the elite individual's exact nodes at child index 0
-        elite_count = int(self.node_counts[best_idx].item())
-        elite_nodes = (
-            torch.arange(elite_count, device=self.device, dtype=torch.int64)
-            + old_offsets[best_idx]
-        )
-        elite_children = torch.zeros(elite_count, device=self.device, dtype=torch.int64)
-        elite_keys = torch.zeros(elite_count, device=self.device, dtype=torch.int64)
+        def expand_indivs(
+            indiv_indices: torch.Tensor, child_offset: int
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            n_indivs = indiv_indices.shape[0]
+            if n_indivs == 0:
+                empty = torch.empty(0, device=self.device, dtype=torch.int64)
+                return empty, empty
 
-        if P == 1:
-            self.colors = self.colors[best_idx : best_idx + 1]
+            counts = self.node_counts[indiv_indices]
+            total = int(counts.sum().item())
+            local_child = torch.repeat_interleave(
+                torch.arange(n_indivs, device=self.device, dtype=torch.int64), counts
+            )
+            local_offsets = torch.cumsum(F.pad(counts[:-1], (1, 0)), dim=0)
+            local_pos = torch.arange(
+                total, device=self.device, dtype=torch.int64
+            ) - torch.repeat_interleave(local_offsets, counts)
+            old_node_idx = old_offsets[indiv_indices][local_child] + local_pos
+            return local_child + child_offset, old_node_idx
+
+        # 1. Expand all preserved individuals into child slots 0 .. K - 1
+        elite_children, elite_nodes = expand_indivs(keep, child_offset=0)
+        num_children = P - K
+
+        if num_children == 0:
+            self.colors = self.colors[keep]
             gather_idx = elite_nodes
             new_node_to_indiv = elite_children
         else:
-            num_children = P - 1
-
-            # 2. Sample parent pairs for the remaining P - 1 slots (child indices 1 .. P - 1)
+            # 2. Sample parent pairs for the remaining P - K slots (child indices K .. P - 1)
             a = torch.multinomial(weights, num_samples=num_children, replacement=True)
             b = torch.multinomial(weights, num_samples=num_children, replacement=True)
             self.colors = torch.cat(
                 [
-                    self.colors[best_idx : best_idx + 1],
+                    self.colors[keep],
                     0.5 * (self.colors[a] + self.colors[b]),
                 ],
                 dim=0,
             )
 
-            def sample_parent_nodes(parents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-                counts = self.node_counts[parents]  # (P - 1,)
-                total = int(counts.sum().item())
-                # Shift child indices by +1 since index 0 is reserved for the elite individual
-                child_idx = (
-                    torch.repeat_interleave(
-                        torch.arange(num_children, device=self.device, dtype=torch.int64),
-                        counts,
-                    )
-                    + 1
-                )
-                local_offsets = torch.cumsum(F.pad(counts[:-1], (1, 0)), dim=0)
-                local_pos = torch.arange(
-                    total, device=self.device, dtype=torch.int64
-                ) - torch.repeat_interleave(local_offsets, counts)
-                old_node_idx = old_offsets[parents][child_idx - 1] + local_pos
+            child_a, nodes_a = expand_indivs(a, child_offset=K)
+            keep_a = torch.rand(nodes_a.shape[0], device=self.device) < 0.5
+            child_a, nodes_a = child_a[keep_a], nodes_a[keep_a]
 
-                keep = torch.rand(total, device=self.device) < 0.5
-                return child_idx[keep], old_node_idx[keep]
+            child_b, nodes_b = expand_indivs(b, child_offset=K)
+            keep_b = torch.rand(nodes_b.shape[0], device=self.device) < 0.5
+            child_b, nodes_b = child_b[keep_b], nodes_b[keep_b]
 
-            child_a, nodes_a = sample_parent_nodes(a)
-            child_b, nodes_b = sample_parent_nodes(b)
-
-            # 3. Combine elite nodes (key 0) with crossover nodes (keys >= 2)
-            keys = torch.cat([elite_keys, child_a * 2, child_b * 2 + 1])
+            # 3. Combine preserved nodes (keys < 2*K) with crossover nodes (keys >= 2*K)
+            keys = torch.cat([elite_children * 2, child_a * 2, child_b * 2 + 1])
             selected_nodes = torch.cat([elite_nodes, nodes_a, nodes_b])
             selected_children = torch.cat([elite_children, child_a, child_b])
 
-            # Guarantee every crossover child (indices >= 1) has at least 1 node
+            # Guarantee every crossover child (indices >= K) has at least 1 node
             counts_check = torch.bincount(selected_children, minlength=P)
             empty_children = (counts_check == 0).nonzero(as_tuple=True)[0]
             if empty_children.numel() > 0:
-                fallback_nodes = old_offsets[a[empty_children - 1]]
+                fallback_nodes = old_offsets[a[empty_children - K]]
                 keys = torch.cat([keys, empty_children * 2])
                 selected_nodes = torch.cat([selected_nodes, fallback_nodes])
                 selected_children = torch.cat([selected_children, empty_children])
@@ -411,20 +437,21 @@ class Population:
         self.params = self.params[gather_idx]
     
     
-    def mutate(self, p_mut: float, std: float, max_angle: float, keep: torch.Tensor | None = None):
+    def mutate(self, p_mut: float, std: float, max_angle: float, keep: torch.Tensor):
         """
         Mutates all nodes with probability p_mut
         Args:
             p_mut (float): Probability each node mutates
             std (float): Standard deviation of mutation magnitude
             max_angle (float): Maximum change in rotation angle
-            keep (Tensor): Nodes indices which may not be mutate
+            keep (Tensor): Individuals which may not be mutated
         """
         # Since mutation occurs per node, there is an implicit bias towards shorter solutions
         
-        mask = torch.empty(self.func_ids.shape, dtype=torch.bool).bernoulli_(p_mut)
-        if keep is not None:
-            mask[keep] = False
+        mask = torch.rand(self.func_ids.shape, device=self.device) < p_mut
+        if keep.numel() > 0:
+            keep_nodes = torch.cat(self.population[:keep.numel()])
+            mask[keep_nodes] = False
         
         idx = mask.nonzero(as_tuple=True)[0]
         K = idx.numel()

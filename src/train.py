@@ -30,10 +30,27 @@ loss_history = np.zeros((n_iter, summary_count))
 color_history = np.zeros((n_iter, summary_count, 3))
 fig_path = Path("output/loss_history.png")
 
-def callback(iter: int, max_iter: int, losses: torch.Tensor, colors: torch.Tensor | None, sdfs: list[SDF]):
-    summary = ", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])
+
+def simpson_index(N: int, n: torch.Tensor):
+    return 1 - torch.sum(n*(n - 1)).cpu().item()/(N*(N - 1))
+
+
+def callback(iter: int, max_iter: int, population: int, species_count: int, species_populations: torch.Tensor, losses: torch.Tensor, colors: torch.Tensor | None, sdfs: list[SDF]):
+    """
+    Args:
+        iter (int): Generation number (starting at 1)
+        max_iter (int): Maximum number of generations
+        population (int): Overall population
+        species_count (int): Number of species in total
+        species_populations (torch.Tensor): Population of every species
+        losses (torch.Tensor): Losses of top {summary_count} species representatives
+        colors (torch.Tensor | None): Rgb colors of top {summary_count} species representatives
+        sdfs (list[SDF]): SDF functions of top {summary_count} species representatives
+    """
+    
+    loss_summary = ", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])
     node_count = sum(len(sdf.nodes) for sdf in sdfs)/len(sdfs)
-    print(f"Epoch {iter}/{max_iter} -- avg nodes: {node_count}, loss: [{summary}]")
+    print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nloss: {loss_summary}\n")
     loss_history[iter-1] = losses.cpu().numpy()
     if colors is not None:
         color_history[iter-1] = colors.cpu().numpy()
@@ -83,5 +100,8 @@ population.train(
     mut_std = 0.01,
     mut_max_angle = 0.005,
     callback = callback,
-    summary_count = summary_count
+    summary_count = summary_count,
+    do_fitness_sharing = True, # I had a mass extinction, leave this on
+    keep_best = 2,
+    species_thresh = 0.5
 )
