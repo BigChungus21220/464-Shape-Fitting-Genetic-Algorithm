@@ -177,7 +177,7 @@ class Population:
             if do_fitness_sharing:
                 fitness /= species_counts[species_labels].to(self.dtype)
             
-            keep = order[:keep_best]
+            keep = species_reps[:keep_best]
             self.crossover(fitness, keep)
             # kept individuals are placed at population[:|keep|]
             self.mutate(mut_p, mut_std, mut_max_angle, keep=torch.arange(keep.numel()))
