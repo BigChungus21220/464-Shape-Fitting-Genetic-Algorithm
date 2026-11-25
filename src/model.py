@@ -323,7 +323,7 @@ class Population:
         self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
 
 
-    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int, backward: bool = False, batches=None):
+    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int, backward: bool = False, batches: list[torch.Tensor] | None = None):
         """
         Returns the loss of each individual on input verts
         (1, V, 3) -> (P,)
@@ -424,6 +424,8 @@ class Population:
             opt.step()
             with torch.no_grad():
                 self.rotations.copy_(F.normalize(self.rotations, p=2, dim=-1))
+                
+        assert(start_losses is not None)
 
         for t in tensors:
             t.requires_grad_(False)
