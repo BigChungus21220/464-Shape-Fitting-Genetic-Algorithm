@@ -99,7 +99,7 @@ class SDF(ix.sdf.SDFProtocol):
     def __call__(self, p: torch.Tensor):
         """Evaluates the function at verts, (..., 3) -> (...)"""
         p_flat = p.flatten(end_dim=-2).unsqueeze(0)
-        sdf = self.nodes[0](p_flat)
+        sdf = self.nodes[0].sign*self.nodes[0](p_flat)
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
             sdf = node.sign*sdUnion(sdf, node.sign*node(p_flat), node.smoothing)
@@ -362,8 +362,9 @@ class Population:
             
             signed_sdfs = self.signs[unique_to_nodes]*(node_sdfs - self.inflates[unique_to_nodes].abs())
             
-            # step over all indiv nodes at once (probably faster at the end of the day, idk)
-            indiv_sdfs = signed_sdfs[bnodes_to_unique[boffsets]] # (B, V)
+            # step over all indiv nodes at once
+            # force first node to be additive
+            indiv_sdfs = self.signs[bnodes[boffsets]] * signed_sdfs[bnodes_to_unique[boffsets]] # (B, V)
             for i in range(1, max_bcount):
                 valid_idx = (i < bcounts).nonzero(as_tuple=True)[0] # B -> R
                 node_idx = bnodes[boffsets[valid_idx] + i] # R -> N
@@ -373,7 +374,7 @@ class Population:
                 indiv_sdfs[valid_idx] = s*sdUnion(indiv_sdfs[valid_idx], sdf, k)
 
             # take losses
-            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1) + 0.3*self.node_counts[indiv_idx]
+            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)*(1 + 0.1*self.node_counts[indiv_idx])
             
         return losses
         

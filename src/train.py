@@ -26,6 +26,9 @@ size = [bounds[1][i] - bounds[0][i] for i in range(3)]
 lower = [(bounds[0][i] - size[i]*padding) for i in range(3)]
 upper = [(bounds[1][i] + size[i]*padding) for i in range(3)]
 
+#lower = (-1,-1,-1)
+#upper = (2,2,2)
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 dtype = torch.float32
