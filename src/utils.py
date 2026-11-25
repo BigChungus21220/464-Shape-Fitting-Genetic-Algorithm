@@ -2,6 +2,7 @@
 
 import torch
 
+
 def unique_indices(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Returns the indices of unique elements of x (no guaruntee on order of occurence) and the inverse mapping from x to the index list
