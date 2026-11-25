@@ -102,7 +102,7 @@ class SDF(ix.sdf.SDFProtocol):
         sdf = self.nodes[0].sign*self.nodes[0](p_flat)
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
-            sdf = node.sign*sdUnion(sdf, node.sign*node(p_flat), node.smoothing)
+            sdf = node.sign*sdUnion(node.sign*sdf, node(p_flat), node.smoothing)
             
         return sdf.reshape(p.shape[:-1])
     
@@ -360,18 +360,17 @@ class Population:
                 samples = transformed[local_idx] # (H, V, 3)
                 node_sdfs[local_idx] = func(samples, *params) # (H, V)
             
-            signed_sdfs = self.signs[unique_to_nodes]*(node_sdfs - self.inflates[unique_to_nodes].abs())
+            inflated_sdfs = node_sdfs - self.inflates[unique_to_nodes].abs()
             
             # step over all indiv nodes at once
-            # force first node to be additive
-            indiv_sdfs = self.signs[bnodes[boffsets]] * signed_sdfs[bnodes_to_unique[boffsets]] # (B, V)
+            indiv_sdfs = inflated_sdfs[bnodes_to_unique[boffsets]] # (B, V)
             for i in range(1, max_bcount):
                 valid_idx = (i < bcounts).nonzero(as_tuple=True)[0] # B -> R
                 node_idx = bnodes[boffsets[valid_idx] + i] # R -> N
                 s = self.signs[node_idx]
                 k = self.smoothings[node_idx]
-                sdf = signed_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
-                indiv_sdfs[valid_idx] = s*sdUnion(indiv_sdfs[valid_idx], sdf, k)
+                sdf = inflated_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
+                indiv_sdfs[valid_idx] = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
 
             # take losses
             losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)*(1 + 0.1*self.node_counts[indiv_idx])
