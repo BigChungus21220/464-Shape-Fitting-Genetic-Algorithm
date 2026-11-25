@@ -22,7 +22,7 @@ def simpson_index(N: int, n: torch.Tensor):
     return 1 - torch.sum(n*(n - 1)).cpu().item()/(N*(N - 1))
 
 def run(
-    shape: str = shapes[0],
+    shape: str = shapes[3],
     n_iter: int = 500,
     pop_size: int = 1000,
     summary_count: int = 10,
@@ -33,7 +33,7 @@ def run(
     mut_max_angle: float = 0.005,
     keep_best: int = 2,
     species_thresh: float = 0.5,
-    fitness_sharing: bool = True, # I had a mass extinction, leave this on
+    fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
     plot_every: int = 10,
     save_every: int = 50,
@@ -63,6 +63,7 @@ def run(
 
     mesh: trimesh.Trimesh = trimesh.load(shape, force='mesh') # type: ignore
     verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
+    normals = torch.tensor(mesh.vertex_normals, device=device, dtype=dtype).unsqueeze(0)
     
     bounds: tuple[list[float], list[float]] = mesh.bounds
     size = [bounds[1][i] - bounds[0][i] for i in range(3)]
@@ -159,6 +160,7 @@ def run(
 
     population.train(
         verts,
+        normals,
         n_iter = n_iter,
         max_nodes_per_batch = max_nodes_per_batch,
         mut_p = mut_p,
@@ -170,6 +172,7 @@ def run(
         keep_best = keep_best,
         species_thresh = species_thresh
     )
+    
     return population
 
 # Alternative run method

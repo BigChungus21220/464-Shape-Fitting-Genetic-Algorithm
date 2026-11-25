@@ -162,12 +162,13 @@ class Population:
     params: torch.Tensor # (N, M, 1, 1) params for each function (not all are used for every function type)
     
     
-    def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
+    def train(self, verts: torch.Tensor, normals: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
               do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor, list[SDF]], None], summary_count: int):
         """Main training loop
 
         Args:
-            verts (torch.Tensor): Target model to match
+            verts (torch.Tensor): Target model to match (1, V, 3)
+            normals (torch.Tensor): Target model to match (1, V, 3)
             n_iter (int): Max iterations
             max_nodes_per_batch (int): Maximum nodes per batch, only affects performance
             mut_p (float): Probability each node recieves mutation
