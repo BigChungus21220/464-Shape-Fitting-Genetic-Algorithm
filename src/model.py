@@ -431,8 +431,6 @@ class Population:
             t.requires_grad_(False)
             t.grad = None
 
-        assert start_losses is not None
-
         # accept-if-better, per candidate
         with torch.no_grad():
             final = self.evaluate(verts, max_nodes_per_batch, batches=batches)
