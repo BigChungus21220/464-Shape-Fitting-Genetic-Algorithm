@@ -10,7 +10,12 @@ from sdf import sdUnion, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCa
 import inspect
 from utils import unique_indices
 import torch.nn.functional as F
-import isoext as ix
+#import isoext as ix
+try:
+    import isoext as ix
+    _SDFBase = ix.sdf.SDFProtocol
+except ImportError:
+    _SDFBase = object
 
 
 SdfType = Callable[..., torch.Tensor]
@@ -28,11 +33,11 @@ SDF_FUNCS: list[tuple[SdfType, int]] = [(func, len(inspect.signature(func).param
 MAX_PARAMS = max(n for _, n in SDF_FUNCS)
 COLOR_DIM = 8
 COLOR_MUT = 0.01
-
+GRAD_DESC_FIELDS = ("rotations", "translations", "inflates", "smoothings", "params")
 
 
 @dataclass
-class SDFNode(ix.sdf.SDFProtocol):
+class SDFNode(_SDFBase):
     func: SdfType
     id: torch.Tensor # (1,)
     rotation: torch.Tensor # (1, 1, 4)
@@ -44,7 +49,7 @@ class SDFNode(ix.sdf.SDFProtocol):
     
     def __call__(self, p: torch.Tensor):
         transformed = quat_apply(self.rotation, p) - self.translation
-        return (self.func(transformed, *self.params.unbind(1)) - self.inflate)
+        return (self.func(transformed, *self.params.unbind(1)) - self.inflate.abs())
     
     def to(self, to: torch.device | torch.dtype | None, other: torch.device | torch.dtype | None = None):
         device = to if isinstance(to, torch.device) else (other if isinstance(other, torch.device) or other is None else None)
@@ -59,7 +64,7 @@ class SDFNode(ix.sdf.SDFProtocol):
             self.sign.to(device=device, dtype=dtype),
             self.params.to(device=device, dtype=dtype)
         )
-    
+
     def serialize(self):
         func_name = self.func.__name__
         return {
@@ -92,7 +97,7 @@ class SDFNode(ix.sdf.SDFProtocol):
         
 
 @dataclass
-class SDF(ix.sdf.SDFProtocol):
+class SDF(_SDFBase):
     nodes: list[SDFNode]
     color: torch.Tensor # (COLOR_DIM,)
     
@@ -102,8 +107,9 @@ class SDF(ix.sdf.SDFProtocol):
         sdf = self.nodes[0].sign*self.nodes[0](p_flat)
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
+
             sdf = node.sign*sdUnion(node.sign*sdf, node(p_flat), node.smoothing)
-            
+       
         return sdf.reshape(p.shape[:-1])
     
     def to(self, to: torch.device | torch.dtype | None, other: torch.device | torch.dtype | None = None):
@@ -163,7 +169,9 @@ class Population:
     
     
     def train(self, verts: torch.Tensor, normals: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
-              do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor, list[SDF]], None], summary_count: int):
+              do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor, list[SDF]], None], summary_count: int,
+          refine_every: int = 10, refine_steps: int = 10, refine_lr: float = 1e-2):
+
         """Main training loop
 
         Args:
@@ -188,6 +196,10 @@ class Population:
         species_reps = species_labels.clone() # (S,) population index of best member of each species
         
         for i in range(n_iter):
+            if refine_every > 0 and i % refine_every == 0:
+                before, after = self.grad_desc(verts, max_nodes_per_batch, refine_steps, refine_lr)
+                print(f"Refine: mean loss {before:.5g} -> {after:.5g}")
+        
             loss = self.evaluate(verts, max_nodes_per_batch).clamp_max(1e20)
             
             # ranking based fitness (maybe not optimal, research needed)
@@ -316,7 +328,7 @@ class Population:
         self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
 
 
-    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int):
+    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int, backward: bool = False, batches=None):
         """
         Returns the loss of each individual on input verts
         (1, V, 3) -> (P,)
@@ -333,8 +345,11 @@ class Population:
         
         V = verts.shape[1]
         losses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
+
+        if batches is None:
+            batches = self.gen_batches(max_nodes_per_batch)
         
-        for indiv_idx in self.gen_batches(max_nodes_per_batch): # B -> P
+        for indiv_idx in batches: # B -> P
             indivs = [self.population[i] for i in indiv_idx.tolist()] # B -> (I -> N)
             
             bnodes = torch.cat(indivs) # K -> N
@@ -373,10 +388,101 @@ class Population:
                 sdf = inflated_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
                 indiv_sdfs[valid_idx] = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
 
-            # take losses
-            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)*(1 + 0.1*self.node_counts[indiv_idx])
+            batch_loss = torch.sum(torch.square(indiv_sdfs), dim=1)*(1 + 0.1*self.node_counts[indiv_idx])
+            if backward:
+                # differentiate batch_loss using chain rule
+                batch_loss.sum().backward()
+            # take losses, detach the tracked operations
+            losses[indiv_idx] = batch_loss.detach() if backward else batch_loss
             
         return losses
+
+    def grad_desc(self, verts: torch.Tensor, max_nodes_per_batch: int, steps: int = 10, lr: float = 1e-2):
+        """
+        Adam steps on the continuous tensors (that the names in GRAD_DESC_FIELDS point to on self), 
+        each candidate keeps the result only if its loss improved.
+        Returns (mean loss before, mean loss after) over the population.
+        """
+        N = self.func_ids.shape[0]
+        self.ids = torch.arange(N, device=self.device, dtype=self.dtype) # unique ids: no merged copies
+        batches = self.gen_batches(max_nodes_per_batch)
+
+        saved = {n: getattr(self, n).detach().clone() for n in GRAD_DESC_FIELDS}
+        tensors = [getattr(self, n) for n in GRAD_DESC_FIELDS]
+
+        # track operations on tensors in GRAD_DESC_FIELDS
+        for t in tensors:
+            t.requires_grad_(True)
+        opt = torch.optim.Adam(tensors, lr=lr)
+
+        start_losses = None
+        for step in range(steps):
+            opt.zero_grad(set_to_none=True)
+            losses = self.evaluate(verts, max_nodes_per_batch, backward=True, batches=batches)
+            # keep track of the loss before running grad desc to rollback to if it steps in worse direction
+            if step == 0:
+                start_losses = losses.clone()
+            for t in tensors:
+                if t.grad is not None:
+                    t.grad.nan_to_num_(0.0, posinf=0.0, neginf=0.0)
+            # use Adam's rules to determine step size and takes the 'step'
+            opt.step()
+            with torch.no_grad():
+                self.rotations.copy_(F.normalize(self.rotations, p=2, dim=-1))
+
+        for t in tensors:
+            t.requires_grad_(False)
+            t.grad = None
+
+        # accept-if-better, per candidate
+        with torch.no_grad():
+            final = self.evaluate(verts, max_nodes_per_batch, batches=batches)
+            worse = ~(final <= start_losses)            # NaN counts as worse
+            node_worse = worse[self.node_to_indiv]      # (N,)
+            for n in GRAD_DESC_FIELDS:
+                getattr(self, n)[node_worse] = saved[n][node_worse]
+            kept = torch.where(worse, start_losses, final)
+
+        print(f"  best {start_losses.min().item():.5g} -> {kept.min().item():.5g}, "
+            f"reverted {int(worse.sum())}/{worse.numel()}")
+        return start_losses.mean().item(), kept.mean().item()
+
+    def refine_top(self, verts: torch.Tensor, max_nodes_per_batch: int = 256, top_k: int = 5, steps: int = 300, lr: float = 1e-2):
+        """Keeps only the top_k lowest-loss individuals and runs deep gradient descent on them."""
+        # find top_k candidates with lowest loss
+        with torch.no_grad():
+            losses = self.evaluate(verts, max_nodes_per_batch)
+            top_indivs = torch.topk(losses, k=min(top_k, losses.numel()), largest=False).indices
+
+        # create bool mask for nodes belonging to top_indivs
+        node_mask = torch.isin(self.node_to_indiv, top_indivs)
+        for attr in ["func_ids", "signs", "node_to_indiv", "ids", *GRAD_DESC_FIELDS]:
+            if hasattr(self, attr):
+                setattr(self, attr, getattr(self, attr)[node_mask])
+
+        # Remap self.population and node indices to the newly sliced arrays (0 .. N_kept - 1)
+        old_to_new = torch.full((node_mask.numel(),), -1, device=self.device, dtype=torch.int64)
+        old_to_new[node_mask] = torch.arange(int(node_mask.sum()), device=self.device)
+        self.population = [old_to_new[self.population[i]] for i in top_indivs.tolist()]
+
+        if hasattr(self, "colors"):
+            self.colors = self.colors[top_indivs]
+
+        indiv_map = torch.full((losses.numel(),), -1, device=self.device, dtype=torch.int64)
+        indiv_map[top_indivs] = torch.arange(top_indivs.numel(), device=self.device)
+        self.node_to_indiv = indiv_map[self.node_to_indiv]
+
+        stats = self.grad_desc(verts, max_nodes_per_batch, steps=steps, lr=lr)
+
+        # Re-order self.population so index 0 is guaranteed to be the best
+        with torch.no_grad():
+            final_losses = self.evaluate(verts, max_nodes_per_batch)
+            order = torch.argsort(final_losses, descending=False)
+            self.population = [self.population[i] for i in order.tolist()]
+            if hasattr(self, "colors"):
+                self.colors = self.colors[order]
+
+        return stats
         
         
     def crossover(self, weights: torch.Tensor, keep: torch.Tensor) -> None:

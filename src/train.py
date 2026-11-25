@@ -35,6 +35,11 @@ def run(
     species_thresh: float = 0.5,
     fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
+    refine_every = 10, # 0 = no gradient refinement (baseline run)
+    refine_steps: int = 10,
+    refine_lr: float = 1e-2,
+    final_top_k: int = 5,
+    final_steps: int = 300,
     plot_every: int = 10,
     save_every: int = 50,
     fig_path: Path = Path("output/loss_history.png"),
@@ -170,9 +175,21 @@ def run(
         summary_count = summary_count,
         do_fitness_sharing = fitness_sharing,
         keep_best = keep_best,
-        species_thresh = species_thresh
+        species_thresh = species_thresh,
+        refine_every = refine_every,
+        refine_steps = refine_steps,
+        refine_lr = refine_lr,
     )
-    
+
+    if final_steps > 0 and final_top_k > 0:
+        population.refine_top(
+            verts,
+            max_nodes_per_batch = max_nodes_per_batch,
+            top_k = final_top_k,
+            steps = final_steps,
+            lr = refine_lr,
+        )
+
     return population
 
 # Alternative run method
