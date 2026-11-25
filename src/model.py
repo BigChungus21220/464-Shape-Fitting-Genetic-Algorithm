@@ -10,6 +10,7 @@ from sdf import sdUnion, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCa
 import inspect
 from utils import unique_indices
 import torch.nn.functional as F
+import isoext as ix
 
 
 SdfType = Callable[..., torch.Tensor]
@@ -31,7 +32,7 @@ COLOR_MUT = 0.01
 
 
 @dataclass
-class SDFNode:
+class SDFNode(ix.sdf.SDFProtocol):
     func: SdfType
     id: torch.Tensor # (1,)
     rotation: torch.Tensor # (1, 1, 4)
@@ -41,9 +42,23 @@ class SDFNode:
     sign: torch.Tensor # (1, 1)
     params: torch.Tensor # (1, C, 1, 1)
     
-    def evaluate(self, verts: torch.Tensor):
-        transformed = quat_apply(self.rotation, verts) - self.translation
-        return (self.func(transformed, self.params.unbind(1)) - self.inflate)
+    def __call__(self, p: torch.Tensor):
+        transformed = quat_apply(self.rotation, p) - self.translation
+        return (self.func(transformed, *self.params.unbind(1)) - self.inflate)
+    
+    def to(self, to: torch.device | torch.dtype | None, other: torch.device | torch.dtype | None = None):
+        device = to if isinstance(to, torch.device) else (other if isinstance(other, torch.device) or other is None else None)
+        dtype = to if isinstance(to, torch.dtype) else (other if isinstance(other, torch.dtype) or other is None else None)
+        return SDFNode(
+            self.func,
+            self.id.to(device=device, dtype=dtype),
+            self.rotation.to(device=device, dtype=dtype),
+            self.translation.to(device=device, dtype=dtype),
+            self.inflate.to(device=device, dtype=dtype),
+            self.smoothing.to(device=device, dtype=dtype),
+            self.sign.to(device=device, dtype=dtype),
+            self.params.to(device=device, dtype=dtype)
+        )
     
     def serialize(self):
         func_name = self.func.__name__
@@ -77,17 +92,30 @@ class SDFNode:
         
 
 @dataclass
-class SDF:
+class SDF(ix.sdf.SDFProtocol):
     nodes: list[SDFNode]
     color: torch.Tensor # (COLOR_DIM,)
     
-    def __call__(self, verts: torch.Tensor):
-        """Evaluates the function at verts, (B, V, 3) -> (B, V)"""
-        sdf = self.nodes[0].evaluate(verts)
+    def __call__(self, p: torch.Tensor):
+        """Evaluates the function at verts, (..., 3) -> (...)"""
+        p_flat = p.flatten(end_dim=-2).unsqueeze(0)
+        sdf = self.nodes[0](p_flat)
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
-            sdf = node.sign*sdUnion(sdf, node.sign*node.evaluate(verts), node.smoothing)
+            sdf = node.sign*sdUnion(sdf, node.sign*node(p_flat), node.smoothing)
             
+        return sdf.reshape(p.shape[:-1])
+    
+    def to(self, to: torch.device | torch.dtype | None, other: torch.device | torch.dtype | None = None):
+        device = to if isinstance(to, torch.device) else (other if isinstance(other, torch.device) or other is None else None)
+        dtype = to if isinstance(to, torch.dtype) else (other if isinstance(other, torch.dtype) or other is None else None)
+        new_color = self.color.to(device=device, dtype=dtype)
+        new_nodes: list[SDFNode] = []
+        for node in self.nodes:
+            new_nodes.append(node.to(device, dtype))
+            
+        return SDF(new_nodes, new_color)
+    
     def serialize(self):
         """Converts to a json serializable object"""
         return {
@@ -135,7 +163,7 @@ class Population:
     
     
     def train(self, verts: torch.Tensor, n_iter: int, max_nodes_per_batch: int, mut_p: float, mut_std: float, mut_max_angle: float, species_thresh: float, 
-              do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor | None, list[SDF]], None], summary_count: int):
+              do_fitness_sharing: bool, keep_best: int, callback: Callable[[int, int, int, int, torch.Tensor, torch.Tensor, torch.Tensor, list[SDF]], None], summary_count: int):
         """Main training loop
 
         Args:
@@ -171,7 +199,7 @@ class Population:
             
             # trigger callback
             callback(i+1, n_iter, P, species_reps.numel(), species_counts, loss[species_reps[:summary_count]], 
-                     species_colors[:summary_count, :3].clip(0.0, 1.0), [self.get_individual(i) for i in species_reps])
+                     species_colors[:summary_count, :3].clip(0.0, 1.0), [self.get_individual(i) for i in species_reps[:summary_count]])
             
             # strategy to preserve diversity (suggested by LLM, research needed)
             if do_fitness_sharing:
