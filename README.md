@@ -10,7 +10,28 @@ Activate the venv: `.venv/Scripts/activate`
 
 Install the requirements: `pip install -r requirements.txt`
 
-Run the training `py src/train.py`
+Run the training `python src/main.py`
+
+## Usage
+
+```
+python src/main.py --shape dog -n 300 -p 1000
+```
+
+Run `python src/main.py --help` for the full list. Common flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--shape` | `dog` | Target mesh: `dog`, `hand`, `pot`, `rod`, `sofa`, or a path to any mesh file |
+| `-n`, `--generations` | `300` | Number of generations (epochs). Each generation evaluates, selects, crosses over and mutates the whole population |
+| `-p`, `--pop-size` | `1000` | Number of individuals. Larger finds better fits but each generation is slower and uses more GPU memory |
+| `--keep-best` | `2` | Elitism: the best individuals of the top species are copied unchanged into the next generation |
+| `--mut-p` | `0.01` | Probability that each primitive (node) gets mutated |
+| `--mut-std` | `0.01` | Size of the mutation noise added to parameters, translations, inflates and smoothings |
+| `--species-thresh` | `0.5` | Color distance under which two individuals count as the same species |
+| `--no-fitness-sharing` | off | Stop dividing fitness by species size. Sharing keeps diversity; turning it off can cause a mass extinction |
+| `--out` | `output/loss_history.png` | Where the loss plot is saved (updated every `--plot-every` generations) |
+| `--seed` | random | Random seed, for reproducible runs |
 
 ## TODO
 - Track number of shapes in outputs
