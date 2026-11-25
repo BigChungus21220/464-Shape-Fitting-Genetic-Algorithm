@@ -4,31 +4,27 @@ import torch
 import trimesh
 import json
 from model import Population, SDF
-import tensor_json
+import reconstruction
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime, timezone
 
-
+shapes_directory = 'datasets/shapes/'
 
 shapes = [
-    'datasets/shapes/dog.obj',
-    'datasets/shapes/hand.obj',
-    'datasets/shapes/pot.obj',
-    'datasets/shapes/rod.obj',
-    'datasets/shapes/sofa.obj'
+    'dog.obj',
+    'hand.obj',
+    'pot.obj',
+    'rod.obj',
+    'sofa.obj'
 ]
-
-mesh: trimesh.Trimesh = trimesh.load(shapes[0], force='mesh') # type: ignore
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-dtype = torch.float32
-verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
 
 # 0.2219 sum square sdf on couch is current record
 
-n_iter = 500
+timestamp_initial = datetime.fromtimestamp(datetime.now().timestamp())
+
+n_iter = 30
 summary_count = 10
 
 loss_history = np.zeros((n_iter, summary_count))
@@ -75,11 +71,11 @@ def callback(iter: int, max_iter: int, losses: torch.Tensor, colors: torch.Tenso
         print("Loss plot updated.")
 
 def write_model_files(iter: int, sdfs: list[SDF]):
-    output_path = Path(f"output/loss_history_sdfs_{timestamp}/iter_{iter}")
+    output_path = models_path/f"iter_{iter}"
     output_path.mkdir(parents=True, exist_ok=True)
 
     for sdf in sdfs:
-        output_file_path = output_path.joinpath(f"sdf-{sdf.idx}")
+        output_file_path = output_path.joinpath(f"sdf-{sdf.idx}.json")
         with output_file_path.open("w", encoding="utf-8") as f:
             json.dump(sdf.serialize(), f, indent=4)    
 
@@ -88,28 +84,57 @@ if __name__ == "__main__":
 
     print("starting training")
 
-    timestamp = int(datetime.now().timestamp())
-    figs_path = Path(f"output/loss_history_sdfs_{timestamp}.png")
+    timestamp_initial = datetime.fromtimestamp(datetime.now().timestamp())
     
+    for shape in shapes:
+        print(f"Training shape: {shape}")
+        shape_path = shapes_directory + shape
 
-    population = Population(
-    pop_size = 1000,
-    std = 1.0,
-    p_add = 0.8,
-    min_nodes = 5,
-    max_nodes = 20,
-    func_weights = [1.0]*6,
-    device = device,
-    dtype = dtype
-    )
+        mesh: trimesh.Trimesh = trimesh.load(shape_path, force='mesh') # type: ignore
 
-    population.train(
-        verts,
-        n_iter = n_iter,
-        max_nodes_per_batch = 256,
-        mut_p = 0.01,
-        mut_std = 0.01,
-        mut_max_angle = 0.005,
-        callback = callback,
-        summary_count = summary_count
-    )
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        dtype = torch.float32
+        verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
+
+        loss_history = np.zeros((n_iter, summary_count))
+        color_history = np.zeros((n_iter, summary_count, 3))
+        fig_path = Path("output/loss_history.png")
+        models_path = Path("output")
+
+                
+        fig_path = Path(f"output/{timestamp_initial}/loss_history_{shape}.png")
+        models_path = Path(f"output/{timestamp_initial}/sdfs/{shape}")
+        models_path.mkdir(parents=True, exist_ok=True)
+    
+        population = Population(
+        pop_size = 1000,
+        std = 1.0,
+        p_add = 0.8,
+        min_nodes = 5,
+        max_nodes = 20,
+        func_weights = [1.0]*6,
+        device = device,
+        dtype = dtype
+        )
+    
+        population.train(
+            verts,
+            n_iter = n_iter,
+            max_nodes_per_batch = 256,
+            mut_p = 0.01,
+            mut_std = 0.01,
+            mut_max_angle = 0.005,
+            callback = callback,
+            summary_count = summary_count
+        )
+    
+        print("Training Completed, beginning example reconstruction")
+    
+        subdirs = (entry for entry in models_path.iterdir() if entry.is_dir())
+    
+        for index, subdir in reversed(list(enumerate(subdirs))):
+            print(f"{index}: {subdir}")
+            for filepath in subdir.iterdir():
+                if filepath.is_file():
+                    print(filepath)
+                    reconstruction.recreate_obj_file(str(filepath))
