@@ -34,19 +34,19 @@ Run `python src/main.py --help` for the full list. Common flags:
 | `--seed` | random | Random seed, for reproducible runs |
 
 ## TODO
-- Track number of shapes in outputs
-- Add a way to get an individual from the population and generate its sdf
-  - Save reconstructed models
 - Compare reconstruction with other metrics
   - try using true contour distance as loss
   - add eikonal constraint (normal alignment loss, like in assignment 1)
-- improve species tracking (Armand)
-  - at the start each individual is its own species
-  - every iteration, use the best candidate from the previous species and the color distance to figure out which species each new individual is
 - research into GA selection strategies and decide on which we should be using
 - implement gradient descent updates
   - Apply several steps of gradient descent to the population every few generations
   - At the end, run deeper gradient descent on the best individual for the final model
+- improve loss function
+  - apply eikonal loss
+  - add some regularization terms
+    - k should be small
+    - node count should be low
+  - occupancy loss
 
 ## Current strategy
 
