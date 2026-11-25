@@ -35,7 +35,8 @@ def sdBox(p: torch.Tensor, h: torch.Tensor, w: torch.Tensor, l: torch.Tensor):
     """
     b = cat(h,w,l)
     q = torch.abs(p) - torch.abs(b)
-    res = norm(torch.clip(q, min=0)) + torch.clip(torch.amax(q, dim=-1, keepdim=True), min=0)
+    #res = norm(torch.clip(q, min=0)) + torch.clip(torch.amax(q, dim=-1, keepdim=True), min=0)
+    res = norm(torch.clip(q, min=0)) + torch.clip(torch.amax(q, dim=-1, keepdim=True), max=0)
     return res.squeeze(-1)
 
 # modified from sdCappedTorus
@@ -83,6 +84,6 @@ def sdCappedCone(p: torch.Tensor, h: torch.Tensor, r1: torch.Tensor, r2: torch.T
     k2 = cat(r2a-r1a, 2.0*ha)
     ca = cat(q[:,:,0:1] - torch.minimum(q[:,:,0:1], torch.where(q[:,:,1:2] < 0.0, r1a, r2a)), abs(q[:,:,1:2]) - ha)
     cb = q - k1 + k2*torch.clip(dot(k1-q, k2)/norm2(k2), 0, 1)
-    s = torch.where((ca[:,:,0:1] < 0) & (cb[:,:,1:2] < 0), -1, 1)
+    s = torch.where((cb[:,:,0:1] < 0) & (ca[:,:,1:2] < 0), -1, 1)
     res = s*torch.sqrt(torch.minimum(norm2(ca), norm2(cb)))
     return res.squeeze(-1)
