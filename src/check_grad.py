@@ -12,12 +12,12 @@ def run_grad_check():
 
     for n in GRAD_DESC_FIELDS:
         getattr(pop, n).requires_grad_(True)
-    pop.evaluate(verts, 256, backward=True)
+    pop.evaluate(verts, pop.gen_batches(256), backward=True)
     auto = {n: getattr(pop, n).grad for n in GRAD_DESC_FIELDS}
 
     @torch.no_grad()
     def total_loss():
-        return pop.evaluate(verts, 256).sum().item()
+        return pop.evaluate(verts, pop.gen_batches(256)).sum().item()
 
     eps = 1e-6
     for n in GRAD_DESC_FIELDS:

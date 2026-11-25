@@ -195,7 +195,8 @@ class Population:
                 before, after = self.grad_desc(verts, max_nodes_per_batch, refine_steps, refine_lr)
                 print(f"Refine: mean loss {before:.5g} -> {after:.5g}")
         
-            loss = self.evaluate(verts, max_nodes_per_batch).clamp_max(1e20)
+            batches = self.gen_batches(max_nodes_per_batch)
+            loss = self.evaluate(verts, batches).clamp_max(1e20)
             
             # ranking based fitness (maybe not optimal, research needed)
             order = torch.argsort(loss, descending=False, stable=True)
@@ -323,7 +324,7 @@ class Population:
         self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
 
 
-    def evaluate(self, verts: torch.Tensor, max_nodes_per_batch: int, backward: bool = False, batches: list[torch.Tensor] | None = None):
+    def evaluate(self, verts: torch.Tensor, batches: list[torch.Tensor], backward: bool = False):
         """
         Returns the loss of each individual on input verts
         (1, V, 3) -> (P,)
@@ -340,9 +341,6 @@ class Population:
         
         V = verts.shape[1]
         losses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
-
-        if batches is None:
-            batches = self.gen_batches(max_nodes_per_batch)
         
         for indiv_idx in batches: # B -> P
             indivs = [self.population[i] for i in indiv_idx.tolist()] # B -> (I -> N)
@@ -392,6 +390,7 @@ class Population:
             
         return losses
 
+
     def grad_desc(self, verts: torch.Tensor, max_nodes_per_batch: int, steps: int = 10, lr: float = 1e-2):
         """
         Adam steps on the continuous tensors (that the names in GRAD_DESC_FIELDS point to on self), 
@@ -413,7 +412,7 @@ class Population:
         start_losses = None
         for step in range(steps):
             opt.zero_grad(set_to_none=True)
-            losses = self.evaluate(verts, max_nodes_per_batch, backward=True, batches=batches)
+            losses = self.evaluate(verts, batches, backward=True)
             # keep track of the loss before running grad desc to rollback to if it steps in worse direction
             if step == 0:
                 start_losses = losses.clone()
@@ -433,7 +432,7 @@ class Population:
 
         # accept-if-better, per candidate
         with torch.no_grad():
-            final = self.evaluate(verts, max_nodes_per_batch, batches=batches)
+            final = self.evaluate(verts, batches)
             worse = ~(final <= start_losses)            # NaN counts as worse
             node_worse = worse[self.node_to_indiv]      # (N,)
             for n in GRAD_DESC_FIELDS:
@@ -444,11 +443,13 @@ class Population:
             f"reverted {int(worse.sum())}/{worse.numel()}")
         return start_losses.mean().item(), kept.mean().item()
 
+
     def refine_top(self, verts: torch.Tensor, max_nodes_per_batch: int = 256, top_k: int = 5, steps: int = 300, lr: float = 1e-2):
         """Keeps only the top_k lowest-loss individuals and runs deep gradient descent on them."""
         # find top_k candidates with lowest loss
         with torch.no_grad():
-            losses = self.evaluate(verts, max_nodes_per_batch)
+            batches = self.gen_batches(max_nodes_per_batch)
+            losses = self.evaluate(verts, batches)
             top_indivs = torch.topk(losses, k=min(top_k, losses.numel()), largest=False).indices
 
         # create bool mask for nodes belonging to top_indivs
@@ -473,7 +474,8 @@ class Population:
 
         # Re-order self.population so index 0 is guaranteed to be the best
         with torch.no_grad():
-            final_losses = self.evaluate(verts, max_nodes_per_batch)
+            batches = self.gen_batches(max_nodes_per_batch)
+            final_losses = self.evaluate(verts, batches)
             order = torch.argsort(final_losses, descending=False)
             self.population = [self.population[i] for i in order.tolist()]
             if hasattr(self, "colors"):
