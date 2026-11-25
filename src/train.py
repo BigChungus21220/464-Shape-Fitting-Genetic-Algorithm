@@ -24,7 +24,7 @@ shapes = [
 
 timestamp_initial = datetime.fromtimestamp(datetime.now().timestamp())
 
-n_iter = 30
+n_iter = 500
 summary_count = 10
 
 loss_history = np.zeros((n_iter, summary_count))
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     timestamp_initial = datetime.fromtimestamp(datetime.now().timestamp())
     
     for shape in shapes:
-        print(f"Training shape: {shape}")
+        '''print(f"Training shape: {shape}")
         shape_path = shapes_directory + shape
 
         mesh: trimesh.Trimesh = trimesh.load(shape_path, force='mesh') # type: ignore
@@ -128,13 +128,14 @@ if __name__ == "__main__":
             summary_count = summary_count
         )
     
-        print("Training Completed, beginning example reconstruction")
+        print("Training Completed, beginning example reconstruction")'''
+        models_path = Path(f"output/2026-11-25 01:23:50.863517/sdfs/{shape}")
     
         subdirs = (entry for entry in models_path.iterdir() if entry.is_dir())
     
         for index, subdir in reversed(list(enumerate(subdirs))):
             print(f"{index}: {subdir}")
             for filepath in subdir.iterdir():
-                if filepath.is_file():
+                if filepath.is_file() and str(filepath).endswith(".json"):
                     print(filepath)
                     reconstruction.recreate_obj_file(str(filepath))

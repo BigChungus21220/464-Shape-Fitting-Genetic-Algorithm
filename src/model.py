@@ -41,9 +41,14 @@ class SDFNode:
     sign: torch.Tensor # (1, 1)
     params: torch.Tensor # (1, C, 1, 1)
     
-    def evaluate(self, verts: torch.Tensor):
+    '''def evaluate(self, verts: torch.Tensor):
         transformed = quat_apply(self.rotation, verts) - self.translation
-        return (self.func(transformed, self.params.unbind(1)) - self.inflate)
+        return (self.func(transformed, self.params.unbind(1)) - self.inflate)'''
+
+    def evaluate(self, verts: torch.Tensor):
+        n = next(n for f, n in SDF_FUNCS if f is self.func)
+        transformed = quat_apply(self.rotation, verts) - self.translation
+        return self.func(transformed, *self.params[:, :n].unbind(1)) - self.inflate
     
     def serialize(self):
         func_name = self.func.__name__
