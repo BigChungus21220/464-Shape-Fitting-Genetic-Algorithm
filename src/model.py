@@ -80,6 +80,7 @@ class SDFNode:
 class SDF:
     nodes: list[SDFNode]
     color: torch.Tensor # (COLOR_DIM,)
+    idx: int
     
     def __call__(self, verts: torch.Tensor):
         sdf = self.nodes[0].evaluate(verts)
@@ -90,7 +91,8 @@ class SDF:
     def serialize(self):
         return {
             "nodes": [node.serialize() for node in self.nodes],
-            "color": self.color.tolist()
+            "color": self.color.tolist(),
+            "idx": self.idx
         }
     
     @classmethod
@@ -98,7 +100,8 @@ class SDF:
         dev = torch.device(device)
         return cls(
             [SDFNode.deserialize(node_dict, device, dtype) for node_dict in dict["nodes"]],
-            torch.tensor(dict["color"], device=dev, dtype=dtype)
+            torch.tensor(dict["color"], device=dev, dtype=dtype),
+            dict["idx"]
         )
 
 
@@ -205,8 +208,16 @@ class Population:
                 self.signs[node_slice],
                 self.params[node_slice, :n_params]
             ))
+
+
+        #idx_int = idx
+        if type(idx) is torch.Tensor:
+            #print(f"idx: {idx.shape}")
+            idx_int = int(idx.item())
+        else:
+            idx_int = idx
         
-        return SDF(nodes, self.colors[idx])
+        return SDF(nodes, self.colors[idx], idx_int)
         
     
     def __init__(self, 
