@@ -87,6 +87,7 @@ class SDF:
         for i in range(1, len(self.nodes)):
             node = self.nodes[i]
             sdf = node.sign*sdUnion(sdf, node.sign*node.evaluate(verts), node.smoothing)
+        return sdf
             
     def serialize(self):
         return {
