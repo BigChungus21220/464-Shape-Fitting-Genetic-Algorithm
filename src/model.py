@@ -10,12 +10,7 @@ from sdf import sdUnion, sdBox, sdRingSegment, sdSegment, sdCappedCylinder, sdCa
 import inspect
 from utils import unique_indices
 import torch.nn.functional as F
-#import isoext as ix
-try:
-    import isoext as ix
-    _SDFBase = ix.sdf.SDFProtocol
-except ImportError:
-    _SDFBase = object
+import isoext as ix
 
 
 SdfType = Callable[..., torch.Tensor]
@@ -37,7 +32,7 @@ GRAD_DESC_FIELDS = ("rotations", "translations", "inflates", "smoothings", "para
 
 
 @dataclass
-class SDFNode(_SDFBase):
+class SDFNode(ix.sdf.SDFProtocol):
     func: SdfType
     id: torch.Tensor # (1,)
     rotation: torch.Tensor # (1, 1, 4)
@@ -97,7 +92,7 @@ class SDFNode(_SDFBase):
         
 
 @dataclass
-class SDF(_SDFBase):
+class SDF(ix.sdf.SDFProtocol):
     nodes: list[SDFNode]
     color: torch.Tensor # (COLOR_DIM,)
     
