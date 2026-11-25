@@ -373,7 +373,7 @@ class Population:
                 indiv_sdfs[valid_idx] = s*sdUnion(indiv_sdfs[valid_idx], sdf, k)
 
             # take losses
-            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1)
+            losses[indiv_idx] = torch.sum(torch.square(indiv_sdfs), dim=1) + 0.3*self.node_counts[indiv_idx]
             
         return losses
         

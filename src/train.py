@@ -18,7 +18,7 @@ shapes = [
     'datasets/shapes/sofa.obj'
 ]
 
-mesh: trimesh.Trimesh = trimesh.load(shapes[0], force='mesh') # type: ignore
+mesh: trimesh.Trimesh = trimesh.load(shapes[3], force='mesh') # type: ignore
 
 padding = 0.05 # percent padding to add to bounds
 bounds: tuple[list[float], list[float]] = mesh.bounds
@@ -137,7 +137,7 @@ population = Population(
     p_add = 0.8,
     min_nodes = 5,
     max_nodes = 20,
-    func_weights = [1.0]*6,
+    func_weights = [1.0]*6, # you can use this as a mask to disable specific functions
     device = device,
     dtype = dtype
 )
@@ -146,9 +146,9 @@ population.train(
     verts,
     n_iter = n_iter,
     max_nodes_per_batch = 256,
-    mut_p = 0.01,
-    mut_std = 0.01,
-    mut_max_angle = 0.005,
+    mut_p = 0.05,
+    mut_std = 0.05,
+    mut_max_angle = 0.01,
     callback = callback,
     summary_count = summary_count,
     do_fitness_sharing = True, # I had a mass extinction, leave this on
