@@ -35,7 +35,7 @@ def run(
     species_thresh: float = 0.5,
     fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
-    refine_every = 10, # 0 = no gradient refinement (baseline run)
+    refine_every: int = 10, # 0 = no gradient refinement (baseline run)
     refine_steps: int = 10,
     refine_lr: float = 1e-2,
     final_top_k: int = 5,
