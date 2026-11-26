@@ -69,7 +69,12 @@ done
 
 The runs are in the background so wait until they finish before proceeding to step 4.
 They write their expression files only at the end, so check `out/csg_trees/` to know
-when they're done.
+when they're done. Can also run this to check them:
+```bash
+for s in rod pot dog hand sofa; do
+  echo -n "$s: "; grep -E '^[0-9.e+-]+$' out/logs/$s.log | awk 'END{print NR" iters, best "$1}'
+done
+```
 
 ### 4. Reconstruct meshes
 ```bash
