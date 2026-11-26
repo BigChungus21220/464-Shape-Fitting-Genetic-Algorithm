@@ -193,7 +193,7 @@ class Population:
         for i in range(n_iter):
             if refine_every > 0 and i % refine_every == 0:
                 before, after = self.grad_desc(verts, max_nodes_per_batch, refine_steps, refine_lr)
-                print(f"Refine: mean loss {before:.5g} -> {after:.5g}")
+                #print(f"Refine: mean loss {before:.5g} -> {after:.5g}")
         
             batches = self.gen_batches(max_nodes_per_batch)
             loss = self.evaluate(verts, batches).clamp_max(1e20)
@@ -379,9 +379,17 @@ class Population:
                 s = self.signs[node_idx]
                 k = self.smoothings[node_idx]
                 sdf = inflated_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
-                indiv_sdfs[valid_idx] = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
+                
+                #indiv_sdfs[valid_idx] = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
+                updated = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
+                indiv_sdfs = indiv_sdfs.index_copy(0, valid_idx, updated)
 
-            batch_loss = torch.sum(torch.square(indiv_sdfs), dim=1)*(1 + 0.1*self.node_counts[indiv_idx])
+            sdf_error = torch.sum(torch.square(indiv_sdfs), dim=1)
+            length_factor = 1 + 0.1*self.node_counts[indiv_idx]
+            #smoothing_factor = 1 + 0.1*...
+            complexity_factor = length_factor
+            batch_loss = sdf_error*complexity_factor
+            
             if backward:
                 # differentiate batch_loss using chain rule
                 batch_loss.sum().backward()
@@ -439,8 +447,8 @@ class Population:
                 getattr(self, n)[node_worse] = saved[n][node_worse]
             kept = torch.where(worse, start_losses, final)
 
-        print(f"  best {start_losses.min().item():.5g} -> {kept.min().item():.5g}, "
-            f"reverted {int(worse.sum())}/{worse.numel()}")
+        #print(f"  best {start_losses.min().item():.5g} -> {kept.min().item():.5g}, "
+        #    f"reverted {int(worse.sum())}/{worse.numel()}")
         return start_losses.mean().item(), kept.mean().item()
 
 

@@ -1,6 +1,6 @@
 # main genetic algorithm loop
 
-from reconstruction import reconstruct_sdf
+from mesh_utils import reconstruct_sdf, resample_mesh
 import torch
 import trimesh
 from model import Population, SDF
@@ -23,6 +23,7 @@ def simpson_index(N: int, n: torch.Tensor):
 
 def run(
     shape: str = shapes[3],
+    resample: int | None = 1000,
     n_iter: int = 500,
     pop_size: int = 1000,
     summary_count: int = 10,
@@ -35,8 +36,8 @@ def run(
     species_thresh: float = 0.5,
     fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
-    refine_every: int = 10, # 0 = no gradient refinement (baseline run)
-    refine_steps: int = 10,
+    refine_every: int = 2, # 0 = no gradient refinement (baseline run)
+    refine_steps: int = 5,
     refine_lr: float = 1e-2,
     final_top_k: int = 5,
     final_steps: int = 300,
@@ -67,14 +68,18 @@ def run(
     fig_path.parent.mkdir(parents=True, exist_ok=True)
 
     mesh: trimesh.Trimesh = trimesh.load(shape, force='mesh') # type: ignore
-    verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
-    normals = torch.tensor(mesh.vertex_normals, device=device, dtype=dtype).unsqueeze(0)
-    
     bounds: tuple[list[float], list[float]] = mesh.bounds
     size = [bounds[1][i] - bounds[0][i] for i in range(3)]
     lower = [(bounds[0][i] - size[i]*padding) for i in range(3)]
     upper = [(bounds[1][i] + size[i]*padding) for i in range(3)]
-
+    
+    if resample is None:
+        verts = torch.tensor(mesh.vertices, device=device, dtype=dtype).unsqueeze(0)
+        normals = torch.tensor(mesh.vertex_normals, device=device, dtype=dtype).unsqueeze(0)
+    else:
+        tris = torch.tensor(mesh.triangles, device=device, dtype=dtype)
+        tri_normals = torch.tensor(mesh.face_normals, device=device, dtype=dtype)
+        verts, normals = resample_mesh(tris, tri_normals, resample)
 
     loss_history = np.zeros((n_iter, summary_count))
     color_history = np.zeros((n_iter, summary_count, 3))
@@ -155,7 +160,7 @@ def run(
     population = Population(
         pop_size = pop_size,
         std = 1.0,
-        p_add = 0.8,
+        p_add = 0.9,
         min_nodes = min_nodes,
         max_nodes = max_nodes,
         func_weights = [1.0]*6, # you can use this as a mask to disable specific functions

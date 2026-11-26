@@ -56,7 +56,7 @@ def sdUnion(d1: torch.Tensor, d2: torch.Tensor, k: torch.Tensor) -> torch.Tensor
     """
     (B,V), (B,V), (B,1) -> (B,V)
     """
-    ka = torch.abs(k)
+    ka = torch.abs(k).clamp(min=1e-6)
     h = torch.square(torch.clip(ka - torch.abs(d1 - d2), min=0))
     return torch.minimum(d1, d2) - h/(4*ka)
 
