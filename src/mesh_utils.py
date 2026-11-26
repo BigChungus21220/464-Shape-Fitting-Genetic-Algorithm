@@ -51,6 +51,6 @@ def resample_mesh(tris: torch.Tensor, tri_normals: torch.Tensor, num_samples: in
 
     r1 = torch.rand((num_samples, 1), device=tris.device, dtype=tris.dtype).sqrt()
     r2 = torch.rand((num_samples, 1), device=tris.device, dtype=tris.dtype)
-    points = v0[idx] + r1 * (1.0 - r2) * e1[idx] + (r1 * r2) * e2[idx]
+    points: torch.Tensor = v0[idx] + r1*(1.0 - r2)*e1[idx] + (r1*r2)*e2[idx]
 
     return points, tri_normals[idx]

@@ -324,131 +324,149 @@ class Population:
         self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
 
 
-    def evaluate(self, verts: torch.Tensor, batches: list[torch.Tensor], backward: bool = False):
+    def evaluate(
+        self,
+        verts: torch.Tensor,
+        batches: list[torch.Tensor],
+        backward: bool = False,
+        deduplicate: bool = True,
+    ) -> torch.Tensor:
         """
         Returns the loss of each individual on input verts
         (1, V, 3) -> (P,)
         """
-        # This function has 8 indexing levels:
-        # Global individual indexing (P)
-        # Global node indexing (N)
-        # Batch individual indexing (B)
-        # Active batch individual indexing at step i (R)
-        # Node position within an individual (I)
-        # Batch node indexing (K)
-        # Unique batch node indexing (U)
-        # Unique batch node function indexing (H)
-        
         V = verts.shape[1]
         losses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
-        
-        for indiv_idx in batches: # B -> P
-            indivs = [self.population[i] for i in indiv_idx.tolist()] # B -> (I -> N)
-            
-            bnodes = torch.cat(indivs) # K -> N
-            bcounts = torch.tensor([len(indiv) for indiv in indivs], device=self.device, dtype=torch.int64) # (B,)
-            boffsets = torch.cumsum(F.pad(bcounts[:-1], (1, 0)), dim=0) # B -> K
+
+        for indiv_idx in batches:  # B -> P
+            indivs = [self.population[i] for i in indiv_idx.tolist()]  # B -> (I -> N)
+
+            bnodes = torch.cat(indivs)  # K -> N
+            bcounts = self.node_counts[indiv_idx]  # (B,)
+            boffsets = torch.cumsum(F.pad(bcounts[:-1], (1, 0)), dim=0)  # B -> K
             max_bcount = cast(int, bcounts.max().item())
-            
-            unique_to_bnodes, bnodes_to_unique = unique_indices(self.ids[bnodes]) # U -> K, K -> U
-            unique_to_nodes = bnodes[unique_to_bnodes] # U -> N
-            U = unique_to_bnodes.numel()
-            
-            func_ids = self.func_ids[unique_to_nodes] # (U,)
-            
-            transformed = quat_apply(self.rotations[unique_to_nodes], verts) - self.translations[unique_to_nodes] # (U, V, 3)
-            
-            node_sdfs = torch.empty((U, V), device=self.device, dtype=self.dtype) # (U, V)
+
+            if deduplicate:
+                unique_to_bnodes, bnodes_to_unique = unique_indices(self.ids[bnodes])  # U -> K, K -> U
+                unique_to_nodes = bnodes[unique_to_bnodes]  # U -> N
+            else:
+                bnodes_to_unique = None
+                unique_to_nodes = bnodes  # U == K
+
+            U = unique_to_nodes.numel()
+            func_ids = self.func_ids[unique_to_nodes]  # (U,)
+
+            transformed = quat_apply(self.rotations[unique_to_nodes], verts) - self.translations[unique_to_nodes]  # (U, V, 3)
+
+            node_sdfs = torch.empty((U, V), device=self.device, dtype=self.dtype)  # (U, V)
             for f_id, (func, n_params) in enumerate(SDF_FUNCS):
-                local_idx = (func_ids == f_id).nonzero(as_tuple=True)[0] # H -> U
+                local_idx = (func_ids == f_id).nonzero(as_tuple=True)[0]  # H -> U
                 if local_idx.numel() == 0:
                     continue
-                
-                node_idx = unique_to_nodes[local_idx] # H -> N
-                params = self.params[node_idx, :n_params].unbind(1) # n_params x (H, 1, 1)
-                samples = transformed[local_idx] # (H, V, 3)
-                node_sdfs[local_idx] = func(samples, *params) # (H, V)
-            
+
+                node_idx = unique_to_nodes[local_idx]  # H -> N
+                params = self.params[node_idx, :n_params].unbind(1)  # n_params x (H, 1, 1)
+                samples = transformed[local_idx]  # (H, V, 3)
+                node_sdfs[local_idx] = func(samples, *params)  # (H, V)
+
             inflated_sdfs = node_sdfs - self.inflates[unique_to_nodes].abs()
-            
+
             # step over all indiv nodes at once
-            indiv_sdfs = inflated_sdfs[bnodes_to_unique[boffsets]] # (B, V)
+            first_idx = bnodes_to_unique[boffsets] if bnodes_to_unique is not None else boffsets
+            indiv_sdfs = inflated_sdfs[first_idx]  # (B, V)
+
             for i in range(1, max_bcount):
-                valid_idx = (i < bcounts).nonzero(as_tuple=True)[0] # B -> R
-                node_idx = bnodes[boffsets[valid_idx] + i] # R -> N
+                valid_idx = (i < bcounts).nonzero(as_tuple=True)[0]  # B -> R
+                step_offsets = boffsets[valid_idx] + i  # R -> K
+                node_idx = bnodes[step_offsets]  # R -> N
                 s = self.signs[node_idx]
                 k = self.smoothings[node_idx]
-                sdf = inflated_sdfs[bnodes_to_unique[boffsets[valid_idx] + i]] # (R, V)
-                
-                #indiv_sdfs[valid_idx] = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
-                updated = s*sdUnion(s*indiv_sdfs[valid_idx], sdf, k)
+                sdf_idx = bnodes_to_unique[step_offsets] if bnodes_to_unique is not None else step_offsets
+                sdf = inflated_sdfs[sdf_idx]  # (R, V)
+
+                updated = s * sdUnion(s * indiv_sdfs[valid_idx], sdf, k)
                 indiv_sdfs = indiv_sdfs.index_copy(0, valid_idx, updated)
 
             sdf_error = torch.sum(torch.square(indiv_sdfs), dim=1)
-            length_factor = 1 + 0.1*self.node_counts[indiv_idx]
-            #smoothing_factor = 1 + 0.1*...
-            complexity_factor = length_factor
-            batch_loss = sdf_error*complexity_factor
-            
+            length_factor = 1 + 0.1 * bcounts
+            batch_loss = sdf_error * length_factor
+
             if backward:
-                # differentiate batch_loss using chain rule
                 batch_loss.sum().backward()
-            # take losses, detach the tracked operations
             losses[indiv_idx] = batch_loss.detach() if backward else batch_loss
-            
+
         return losses
 
 
-    def grad_desc(self, verts: torch.Tensor, max_nodes_per_batch: int, steps: int = 10, lr: float = 1e-2):
+    def grad_desc(
+        self,
+        verts: torch.Tensor,
+        max_nodes_per_batch: int,
+        steps: int = 10,
+        lr: float = 1e-2,
+    ) -> tuple[float, float]:
         """
-        Adam steps on the continuous tensors (that the names in GRAD_DESC_FIELDS point to on self), 
-        each candidate keeps the result only if its loss improved.
+        Runs Adam on the continuous tensors listed in GRAD_DESC_FIELDS without node
+        deduplication, keeping updates per individual only if loss improves.
         Returns (mean loss before, mean loss after) over the population.
         """
-        N = self.func_ids.shape[0]
-        self.ids = torch.arange(N, device=self.device, dtype=self.dtype) # unique ids: no merged copies
-        batches = self.gen_batches(max_nodes_per_batch)
+        batches = self.gen_batches(max_nodes_per_batch, deduplicate=False)
 
         saved = {n: getattr(self, n).detach().clone() for n in GRAD_DESC_FIELDS}
         tensors = [getattr(self, n) for n in GRAD_DESC_FIELDS]
 
-        # track operations on tensors in GRAD_DESC_FIELDS
         for t in tensors:
             t.requires_grad_(True)
-        opt = torch.optim.Adam(tensors, lr=lr)
+        opt = torch.optim.Adam(tensors, lr=lr, fused=(self.device.type == "cuda"))
 
-        start_losses = None
+        start_losses: torch.Tensor | None = None
         for step in range(steps):
             opt.zero_grad(set_to_none=True)
-            losses = self.evaluate(verts, batches, backward=True)
-            # keep track of the loss before running grad desc to rollback to if it steps in worse direction
+            losses = self.evaluate(verts, batches, backward=True, deduplicate=False)
             if step == 0:
                 start_losses = losses.clone()
+
             for t in tensors:
                 if t.grad is not None:
                     t.grad.nan_to_num_(0.0, posinf=0.0, neginf=0.0)
-            # use Adam's rules to determine step size and takes the 'step'
+
             opt.step()
             with torch.no_grad():
                 self.rotations.copy_(F.normalize(self.rotations, p=2, dim=-1))
-                
-        assert(start_losses is not None)
+
+        assert start_losses is not None
 
         for t in tensors:
             t.requires_grad_(False)
             t.grad = None
 
-        # accept-if-better, per candidate
+        # Accept-if-better per candidate
         with torch.no_grad():
-            final = self.evaluate(verts, batches)
+            final = self.evaluate(verts, batches, backward=False, deduplicate=False)
             worse = ~(final <= start_losses)            # NaN counts as worse
             node_worse = worse[self.node_to_indiv]      # (N,)
+
             for n in GRAD_DESC_FIELDS:
                 getattr(self, n)[node_worse] = saved[n][node_worse]
+
+            # Only assign new IDs to nodes that actually changed; preserve shared IDs on reverted individuals
+            improved_nodes = (~node_worse).nonzero(as_tuple=True)[0]
+            if improved_nodes.numel() > 0:
+                if self.ids.is_floating_point():
+                    self.ids[improved_nodes] = torch.rand(
+                        (improved_nodes.numel(),), device=self.device, dtype=self.ids.dtype
+                    )
+                else:
+                    self.ids[improved_nodes] = torch.randint(
+                        0,
+                        torch.iinfo(torch.int64).max,
+                        (improved_nodes.numel(),),
+                        device=self.device,
+                        dtype=self.ids.dtype,
+                    )
+
             kept = torch.where(worse, start_losses, final)
 
-        #print(f"  best {start_losses.min().item():.5g} -> {kept.min().item():.5g}, "
-        #    f"reverted {int(worse.sum())}/{worse.numel()}")
         return start_losses.mean().item(), kept.mean().item()
 
 
@@ -631,34 +649,75 @@ class Population:
         self.params[idx] += torch.normal(0.0, std, (K, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
     
     
-    def gen_batches(self, k: int):
+    def gen_batches(self, k: int, deduplicate: bool = True) -> list[torch.Tensor]:
         """
-        Greedily packs individuals into batches of at most `k` unique nodes,
-        maximizing shared nodes and breaking ties by minimum combined function types.
+        Greedily packs individuals into batches of at most `k` unique (or total, if
+        `deduplicate=False`) nodes, breaking ties by minimum combined function types.
         """
-        
         P = len(self.population)
-        ids_cpu = self.ids.cpu().tolist()
+        counts_cpu = self.node_counts.cpu().tolist()
         funcs_cpu = self.func_ids.cpu().tolist()
 
-        pop_ids: list[set[float]] = []
-        pop_funcs: list[set[int]] = []
+        # Bitmask of SDF function types used by each individual
+        pop_func_masks: list[int] = []
         for indiv in self.population:
-            node_indices = indiv.tolist()
-            pop_ids.append({ids_cpu[idx] for idx in node_indices})
-            pop_funcs.append({funcs_cpu[idx] for idx in node_indices})
+            mask = 0
+            for idx in indiv.tolist():
+                mask |= 1 << funcs_cpu[idx]
+            pop_func_masks.append(mask)
 
         unassigned = set(range(P))
         batches: list[torch.Tensor] = []
 
+        if not deduplicate:
+            while unassigned:
+                seed = min(unassigned, key=lambda i: (pop_func_masks[i].bit_count(), -counts_cpu[i]))
+                unassigned.remove(seed)
+
+                batch = [seed]
+                group_nodes = counts_cpu[seed]
+                group_func_mask = pop_func_masks[seed]
+
+                while group_nodes < k and unassigned:
+                    best_cand: int | None = None
+                    best_key: tuple[int, int] | None = None
+
+                    for cand in unassigned:
+                        new_total = group_nodes + counts_cpu[cand]
+                        if new_total > k:
+                            continue
+
+                        combined_types = (group_func_mask | pop_func_masks[cand]).bit_count()
+                        # Minimize new function types added, then pack largest fitting individual first
+                        key = (combined_types, -counts_cpu[cand])
+                        if best_key is None or key < best_key:
+                            best_key = key
+                            best_cand = cand
+
+                    if best_cand is None:
+                        break
+
+                    batch.append(best_cand)
+                    unassigned.remove(best_cand)
+                    group_nodes += counts_cpu[best_cand]
+                    group_func_mask |= pop_func_masks[best_cand]
+
+                batches.append(torch.tensor(batch, device=self.device, dtype=torch.int64))
+
+            return batches
+
+        ids_cpu: list[float] = self.ids.cpu().tolist()
+        pop_ids: list[set[float]] = [
+            {ids_cpu[idx] for idx in indiv.tolist()} for indiv in self.population
+        ]
+
         while unassigned:
-            # Start the batch with the unassigned individual that has the fewest function types
-            seed = min(unassigned, key=lambda i: len(pop_funcs[i]))
+            seed = min(unassigned, key=lambda i: pop_func_masks[i].bit_count())
             unassigned.remove(seed)
 
             batch = [seed]
             group_ids = set(pop_ids[seed])
-            group_funcs = set(pop_funcs[seed])
+            group_func_mask = pop_func_masks[seed]
 
             while len(group_ids) < k and unassigned:
                 best_cand: int | None = None
@@ -671,7 +730,7 @@ class Population:
                         continue
 
                     shared_nodes = len(cand_ids) - new_nodes
-                    combined_types = len(group_funcs | pop_funcs[cand])
+                    combined_types = (group_func_mask | pop_func_masks[cand]).bit_count()
                     key = (-shared_nodes, combined_types)
 
                     if best_key is None or key < best_key:
@@ -684,7 +743,7 @@ class Population:
                 batch.append(best_cand)
                 unassigned.remove(best_cand)
                 group_ids.update(pop_ids[best_cand])
-                group_funcs.update(pop_funcs[best_cand])
+                group_func_mask |= pop_func_masks[best_cand]
 
             batches.append(torch.tensor(batch, device=self.device, dtype=torch.int64))
 
