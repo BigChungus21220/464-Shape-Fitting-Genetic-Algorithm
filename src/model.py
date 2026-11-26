@@ -192,11 +192,11 @@ class Population:
         
         for i in range(n_iter):
             if refine_every > 0 and i % refine_every == 0:
-                before, after = self.grad_desc(verts, max_nodes_per_batch, refine_steps, refine_lr)
+                before, after = self.grad_desc(verts, normals, max_nodes_per_batch, refine_steps, refine_lr)
                 #print(f"Refine: mean loss {before:.5g} -> {after:.5g}")
         
             batches = self.gen_batches(max_nodes_per_batch)
-            loss = self.evaluate(verts, batches).clamp_max(1e20)
+            loss = self.evaluate(verts, batches, 0.1, normals).clamp_max(1e20)
             
             # ranking based fitness (maybe not optimal, research needed)
             order = torch.argsort(loss, descending=False, stable=True)
@@ -328,72 +328,110 @@ class Population:
         self,
         verts: torch.Tensor,
         batches: list[torch.Tensor],
+        normal_weight: float = 0.0,
+        target_normals: torch.Tensor | None = None,
         backward: bool = False,
-        deduplicate: bool = True,
+        deduplicate: bool = False,
     ) -> torch.Tensor:
         """
         Returns the loss of each individual on input verts
         (1, V, 3) -> (P,)
         """
+        use_normal = normal_weight > 0.0
+        if use_normal and deduplicate:
+            raise ValueError("Set deduplicate=False when normal_weight > 0.")
+        if use_normal and target_normals is None:
+            raise ValueError("target_normals required for normal_weight > 0.")
+        
         V = verts.shape[1]
         losses = torch.empty((len(self.population),), device=self.device, dtype=self.dtype)
 
-        for indiv_idx in batches:  # B -> P
-            indivs = [self.population[i] for i in indiv_idx.tolist()]  # B -> (I -> N)
+        with torch.set_grad_enabled(backward or use_normal):
+            for indiv_idx in batches:  # B -> P
+                B = indiv_idx.shape[0]
+                indivs = [self.population[i] for i in indiv_idx.tolist()]  # B -> (I -> N)
 
-            bnodes = torch.cat(indivs)  # K -> N
-            bcounts = self.node_counts[indiv_idx]  # (B,)
-            boffsets = torch.cumsum(F.pad(bcounts[:-1], (1, 0)), dim=0)  # B -> K
-            max_bcount = cast(int, bcounts.max().item())
+                bnodes = torch.cat(indivs)  # K -> N
+                bcounts = self.node_counts[indiv_idx]  # (B,)
+                boffsets = torch.cumsum(F.pad(bcounts[:-1], (1, 0)), dim=0)  # B -> K
+                max_bcount = cast(int, bcounts.max().item())
 
-            if deduplicate:
-                unique_to_bnodes, bnodes_to_unique = unique_indices(self.ids[bnodes])  # U -> K, K -> U
-                unique_to_nodes = bnodes[unique_to_bnodes]  # U -> N
-            else:
-                bnodes_to_unique = None
-                unique_to_nodes = bnodes  # U == K
+                if deduplicate:
+                    unique_to_bnodes, bnodes_to_unique = unique_indices(self.ids[bnodes])  # U -> K, K -> U
+                    unique_to_nodes = bnodes[unique_to_bnodes]  # U -> N
+                else:
+                    bnodes_to_unique = None
+                    unique_to_nodes = bnodes  # U == K
 
-            U = unique_to_nodes.numel()
-            func_ids = self.func_ids[unique_to_nodes]  # (U,)
+                U = unique_to_nodes.numel()
+                func_ids = self.func_ids[unique_to_nodes]  # (U,)
 
-            transformed = quat_apply(self.rotations[unique_to_nodes], verts) - self.translations[unique_to_nodes]  # (U, V, 3)
+                if use_normal:
+                    # Independent (B, V, 3) input per individual so autograd does not sum across B
+                    batch_verts = verts.expand(B, V, 3).clone().requires_grad_(True)
+                    node_verts = batch_verts.repeat_interleave(bcounts, dim=0)  # (K, V, 3)
+                else:
+                    batch_verts = None
+                    node_verts = verts  # (1, V, 3)
 
-            node_sdfs = torch.empty((U, V), device=self.device, dtype=self.dtype)  # (U, V)
-            for f_id, (func, n_params) in enumerate(SDF_FUNCS):
-                local_idx = (func_ids == f_id).nonzero(as_tuple=True)[0]  # H -> U
-                if local_idx.numel() == 0:
-                    continue
+                transformed = quat_apply(self.rotations[unique_to_nodes], node_verts) - self.translations[unique_to_nodes]  # (U, V, 3)
 
-                node_idx = unique_to_nodes[local_idx]  # H -> N
-                params = self.params[node_idx, :n_params].unbind(1)  # n_params x (H, 1, 1)
-                samples = transformed[local_idx]  # (H, V, 3)
-                node_sdfs[local_idx] = func(samples, *params)  # (H, V)
+                node_sdfs = torch.empty((U, V), device=self.device, dtype=self.dtype)  # (U, V)
+                for f_id, (func, n_params) in enumerate(SDF_FUNCS):
+                    local_idx = (func_ids == f_id).nonzero(as_tuple=True)[0]  # H -> U
+                    if local_idx.numel() == 0:
+                        continue
 
-            inflated_sdfs = node_sdfs - self.inflates[unique_to_nodes].abs()
+                    node_idx = unique_to_nodes[local_idx]  # H -> N
+                    params = self.params[node_idx, :n_params].unbind(1)  # n_params x (H, 1, 1)
+                    samples = transformed[local_idx]  # (H, V, 3)
+                    node_sdfs[local_idx] = func(samples, *params)  # (H, V)
 
-            # step over all indiv nodes at once
-            first_idx = bnodes_to_unique[boffsets] if bnodes_to_unique is not None else boffsets
-            indiv_sdfs = inflated_sdfs[first_idx]  # (B, V)
+                inflated_sdfs = node_sdfs - self.inflates[unique_to_nodes].abs()
 
-            for i in range(1, max_bcount):
-                valid_idx = (i < bcounts).nonzero(as_tuple=True)[0]  # B -> R
-                step_offsets = boffsets[valid_idx] + i  # R -> K
-                node_idx = bnodes[step_offsets]  # R -> N
-                s = self.signs[node_idx]
-                k = self.smoothings[node_idx]
-                sdf_idx = bnodes_to_unique[step_offsets] if bnodes_to_unique is not None else step_offsets
-                sdf = inflated_sdfs[sdf_idx]  # (R, V)
+                # step over all indiv nodes at once
+                first_idx = bnodes_to_unique[boffsets] if bnodes_to_unique is not None else boffsets
+                indiv_sdfs = inflated_sdfs[first_idx]  # (B, V)
 
-                updated = s * sdUnion(s * indiv_sdfs[valid_idx], sdf, k)
-                indiv_sdfs = indiv_sdfs.index_copy(0, valid_idx, updated)
+                for i in range(1, max_bcount):
+                    valid_idx = (i < bcounts).nonzero(as_tuple=True)[0]  # B -> R
+                    step_offsets = boffsets[valid_idx] + i  # R -> K
+                    node_idx = bnodes[step_offsets]  # R -> N
+                    s = self.signs[node_idx]
+                    k = self.smoothings[node_idx]
+                    sdf_idx = bnodes_to_unique[step_offsets] if bnodes_to_unique is not None else step_offsets
+                    sdf = inflated_sdfs[sdf_idx]  # (R, V)
 
-            sdf_error = torch.sum(torch.square(indiv_sdfs), dim=1)
-            length_factor = 1 + 0.1 * bcounts
-            batch_loss = sdf_error * length_factor
+                    updated = s * sdUnion(s * indiv_sdfs[valid_idx], sdf, k)
+                    indiv_sdfs = indiv_sdfs.index_copy(0, valid_idx, updated)
+                    
+                #####################
+                # loss calculations #
+                #####################
+                
+                batch_loss = torch.sum(torch.square(indiv_sdfs), dim=1)
+                if use_normal:
+                    assert(target_normals is not None)
+                    assert(batch_verts is not None)
+                    
+                    grads = torch.autograd.grad(
+                        outputs=indiv_sdfs,
+                        inputs=batch_verts,
+                        grad_outputs=torch.ones_like(indiv_sdfs),
+                        create_graph=backward,
+                        retain_graph=backward,
+                    )[0]  # (B, V, 3)
 
-            if backward:
-                batch_loss.sum().backward()
-            losses[indiv_idx] = batch_loss.detach() if backward else batch_loss
+                    grad_norm = torch.sqrt(torch.sum(torch.square(grads), dim=-1) + 1e-12)  # (B, V)
+                    normals = grads / grad_norm.unsqueeze(-1)
+                    normal_error = torch.sum(1.0 - (normals*target_normals).sum(dim=-1), dim=1)
+                    batch_loss += normal_weight*normal_error
+
+                batch_loss *= 1 + 0.1 * bcounts
+
+                if backward:
+                    batch_loss.sum().backward()
+                losses[indiv_idx] = batch_loss.detach() if backward else batch_loss
 
         return losses
 
@@ -401,6 +439,7 @@ class Population:
     def grad_desc(
         self,
         verts: torch.Tensor,
+        normals: torch.Tensor,
         max_nodes_per_batch: int,
         steps: int = 10,
         lr: float = 1e-2,
@@ -410,7 +449,7 @@ class Population:
         deduplication, keeping updates per individual only if loss improves.
         Returns (mean loss before, mean loss after) over the population.
         """
-        batches = self.gen_batches(max_nodes_per_batch, deduplicate=False)
+        batches = self.gen_batches(max_nodes_per_batch)
 
         saved = {n: getattr(self, n).detach().clone() for n in GRAD_DESC_FIELDS}
         tensors = [getattr(self, n) for n in GRAD_DESC_FIELDS]
@@ -422,7 +461,7 @@ class Population:
         start_losses: torch.Tensor | None = None
         for step in range(steps):
             opt.zero_grad(set_to_none=True)
-            losses = self.evaluate(verts, batches, backward=True, deduplicate=False)
+            losses = self.evaluate(verts, batches, 0.1, normals, backward=True)
             if step == 0:
                 start_losses = losses.clone()
 
@@ -442,7 +481,7 @@ class Population:
 
         # Accept-if-better per candidate
         with torch.no_grad():
-            final = self.evaluate(verts, batches, backward=False, deduplicate=False)
+            final = self.evaluate(verts, batches, 0.1, normals, backward=False)
             worse = ~(final <= start_losses)            # NaN counts as worse
             node_worse = worse[self.node_to_indiv]      # (N,)
 
@@ -470,12 +509,12 @@ class Population:
         return start_losses.mean().item(), kept.mean().item()
 
 
-    def refine_top(self, verts: torch.Tensor, max_nodes_per_batch: int = 256, top_k: int = 5, steps: int = 300, lr: float = 1e-2):
+    def refine_top(self, verts: torch.Tensor, normals: torch.Tensor, max_nodes_per_batch: int = 256, top_k: int = 5, steps: int = 300, lr: float = 1e-2):
         """Keeps only the top_k lowest-loss individuals and runs deep gradient descent on them."""
         # find top_k candidates with lowest loss
         with torch.no_grad():
             batches = self.gen_batches(max_nodes_per_batch)
-            losses = self.evaluate(verts, batches)
+            losses = self.evaluate(verts, batches, 0.1, normals)
             top_indivs = torch.topk(losses, k=min(top_k, losses.numel()), largest=False).indices
 
         # create bool mask for nodes belonging to top_indivs
@@ -496,12 +535,12 @@ class Population:
         indiv_map[top_indivs] = torch.arange(top_indivs.numel(), device=self.device)
         self.node_to_indiv = indiv_map[self.node_to_indiv]
 
-        stats = self.grad_desc(verts, max_nodes_per_batch, steps=steps, lr=lr)
+        stats = self.grad_desc(verts, normals, max_nodes_per_batch, steps=steps, lr=lr)
 
         # Re-order self.population so index 0 is guaranteed to be the best
         with torch.no_grad():
             batches = self.gen_batches(max_nodes_per_batch)
-            final_losses = self.evaluate(verts, batches)
+            final_losses = self.evaluate(verts, batches, 0.1, normals)
             order = torch.argsort(final_losses, descending=False)
             self.population = [self.population[i] for i in order.tolist()]
             if hasattr(self, "colors"):
@@ -649,7 +688,7 @@ class Population:
         self.params[idx] += torch.normal(0.0, std, (K, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
     
     
-    def gen_batches(self, k: int, deduplicate: bool = True) -> list[torch.Tensor]:
+    def gen_batches(self, k: int, deduplicate: bool = False) -> list[torch.Tensor]:
         """
         Greedily packs individuals into batches of at most `k` unique (or total, if
         `deduplicate=False`) nodes, breaking ties by minimum combined function types.

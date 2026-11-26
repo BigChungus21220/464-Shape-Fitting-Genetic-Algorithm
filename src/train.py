@@ -19,7 +19,7 @@ shapes = [
 ]
 
 def simpson_index(N: int, n: torch.Tensor):
-    return 1 - torch.sum(n*(n - 1)).cpu().item()/(N*(N - 1))
+    return 1 - torch.sum(n*(n - 1)).detach().cpu().item()/(N*(N - 1))
 
 def run(
     shape: str = shapes[3],
@@ -36,7 +36,7 @@ def run(
     species_thresh: float = 0.5,
     fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
-    refine_every: int = 2, # 0 = no gradient refinement (baseline run)
+    refine_every: int = 0, # 0 = no gradient refinement (baseline run)
     refine_steps: int = 5,
     refine_lr: float = 1e-2,
     final_top_k: int = 5,
@@ -99,12 +99,12 @@ def run(
             sdfs (list[SDF]): SDF functions of top {summary_count} species representatives
         """
         
-        loss_summary = ", ".join([f"{loss:.5g}" for loss in losses.cpu().tolist()])
+        loss_summary = ", ".join([f"{loss:.5g}" for loss in losses.detach().cpu().tolist()])
         node_count = sum(len(sdf.nodes) for sdf in sdfs)/len(sdfs)
         print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nLoss: {loss_summary}\n")
-        loss_history[iter-1] = losses.cpu().numpy()
+        loss_history[iter-1] = losses.detach().cpu().numpy()
         if colors is not None:
-            color_history[iter-1] = colors.cpu().numpy()
+            color_history[iter-1] = colors.detach().cpu().numpy()
 
         if iter % plot_every == 0 or iter == max_iter:
             plot_loss(iter, max_iter)
@@ -151,7 +151,7 @@ def run(
                 
             output_model = output_path.joinpath(f"sdf-{i + 1}.obj")
             verts, tris = reconstruct_sdf(sdf, lower, upper, reconstruction_resolution)
-            mesh = trimesh.Trimesh(vertices=verts.cpu().tolist(), faces=tris.cpu().tolist())
+            mesh = trimesh.Trimesh(vertices=verts.detach().cpu().tolist(), faces=tris.detach().cpu().tolist())
             mesh.export(output_model)
             
         print("Models exported")
@@ -191,6 +191,7 @@ def run(
     if final_steps > 0 and final_top_k > 0:
         population.refine_top(
             verts,
+            normals,
             max_nodes_per_batch = max_nodes_per_batch,
             top_k = final_top_k,
             steps = final_steps,
