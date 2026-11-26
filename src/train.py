@@ -80,6 +80,8 @@ def run(
         tris = torch.tensor(mesh.triangles, device=device, dtype=dtype)
         tri_normals = torch.tensor(mesh.face_normals, device=device, dtype=dtype)
         verts, normals = resample_mesh(tris, tri_normals, resample)
+        verts = verts.unsqueeze(0)
+        normals = normals.unsqueeze(0)
 
     loss_history = np.zeros((n_iter, summary_count))
     color_history = np.zeros((n_iter, summary_count, 3))
