@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import json
-import shutil
+from datetime import datetime
 
 shapes = [
     'datasets/shapes/dog.obj',
@@ -43,29 +43,30 @@ def run(
     final_steps: int = 300,
     plot_every: int = 10,
     save_every: int = 50,
-    fig_path: Path = Path("output/loss_history.png"),
-    models_path: Path = Path("output/models"),
+    out_dir: str | Path = "output",
     padding: float = 0.05, # percent padding to add to reconstruction bounds
     reconstruction_resolution: int = 200,
     device: str | None = None,
     seed: int | None = None,
 ):
-    models_path.mkdir(exist_ok=True, parents=True)
+    config = {k: str(v) for k, v in locals().items()}
 
-    for item in models_path.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
-    
+    # each run gets its own timestamped folder: <out_dir>/<YYYY-MM-DD_HH-MM-SS>/
+    run_dir = Path(out_dir)/datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir.mkdir(parents=True, exist_ok=False)
+    fig_path = run_dir/"loss_history.png"
+    models_path = run_dir/"models"
+    models_path.mkdir()
+    with (run_dir/"config.json").open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
+    print(f"Writing output to {run_dir}")
+
     if seed is not None:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     dtype = torch.float32
-    fig_path = Path(fig_path)
-    fig_path.parent.mkdir(parents=True, exist_ok=True)
 
     mesh: trimesh.Trimesh = trimesh.load(shape, force='mesh') # type: ignore
     bounds: tuple[list[float], list[float]] = mesh.bounds

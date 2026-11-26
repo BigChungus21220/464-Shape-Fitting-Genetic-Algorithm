@@ -13,7 +13,8 @@ def main():
     io = parser.add_argument_group("input / output")
     io.add_argument("--shape", default="dog",
                     help=f"one of {list(SHAPE_NAMES)} or a path to a mesh file (default: dog)")
-    io.add_argument("--out", default="output/loss_history.png", help="loss plot output path")
+    io.add_argument("--out-dir", default="output",
+                    help="base output dir; each run writes to <out-dir>/<timestamp>/ (default: output)")
     io.add_argument("--plot-every", type=int, default=10, help="update the loss plot every N generations")
     io.add_argument("--summary-count", type=int, default=10, help="number of top species to report")
 
@@ -53,7 +54,7 @@ def main():
         species_thresh=args.species_thresh,
         fitness_sharing=not args.no_fitness_sharing,
         plot_every=args.plot_every,
-        fig_path=args.out,
+        out_dir=args.out_dir,
         device=args.device,
         seed=args.seed,
     )

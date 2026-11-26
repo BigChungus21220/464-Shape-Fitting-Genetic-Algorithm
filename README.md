@@ -30,7 +30,7 @@ Run `python src/main.py --help` for the full list. Common flags:
 | `--mut-std` | `0.01` | Size of the mutation noise added to parameters, translations, inflates and smoothings |
 | `--species-thresh` | `0.5` | Color distance under which two individuals count as the same species |
 | `--no-fitness-sharing` | off | Stop dividing fitness by species size. Sharing keeps diversity; turning it off can cause a mass extinction |
-| `--out` | `output/loss_history.png` | Where the loss plot is saved (updated every `--plot-every` generations) |
+| `--out-dir` | `output` | Base output folder. Each run writes `loss_history.png` (updated every `--plot-every` generations), `config.json` and `models/` to `<out-dir>/<YYYY-MM-DD_HH-MM-SS>/` |
 | `--seed` | random | Random seed, for reproducible runs |
 
 ## TODO
