@@ -140,7 +140,7 @@ def run(
         print("Loss plot updated.")
 
     
-    def write_model_files(iter: int, sdfs: list[SDF]):
+    def write_model_files(iter: int | str, sdfs: list[SDF]):
         output_path = models_path/f"iter_{iter}"
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -197,6 +197,11 @@ def run(
             steps = final_steps,
             lr = refine_lr,
         )
+        refined_sdfs = [
+        population.get_individual(i)
+        for i in range(min(final_top_k, len(population.population)))
+        ]
+        write_model_files("final_refined", refined_sdfs)
 
     return population
 

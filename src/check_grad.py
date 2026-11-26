@@ -35,7 +35,7 @@ def run_grad_check():
             )
             print(f"{n:13s} {str(idx):18s} autograd={g[idx].item():+.4e}  fd={fd:+.4e}")
 
-    before, after = pop.grad_desc(verts, 256, steps=50, lr=1e-2)
+    before, after = pop.grad_desc(verts,normals = torch.zeros_like(verts), max_nodes_per_batch=256, steps=50, lr=1e-2)
     assert after < before, f"Expected loss to decrease, got {before} -> {after}"
     print(f"All gradient checks passed (mean loss: {before:.4f} -> {after:.4f}).")
 

@@ -527,7 +527,10 @@ class Population:
         old_to_new = torch.full((node_mask.numel(),), -1, device=self.device, dtype=torch.int64)
         old_to_new[node_mask] = torch.arange(int(node_mask.sum()), device=self.device)
         self.population = [old_to_new[self.population[i]] for i in top_indivs.tolist()]
-
+        self.pop_size = len(self.population)
+        
+        if hasattr(self, "node_counts"):
+            self.node_counts = self.node_counts[top_indivs]
         if hasattr(self, "colors"):
             self.colors = self.colors[top_indivs]
 

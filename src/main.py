@@ -37,9 +37,10 @@ def main():
     rt.add_argument("--device", default=None, help="cuda or cpu (default: auto)")
     rt.add_argument("--seed", type=int, default=None, help="random seed")
     args = parser.parse_args()
-
+    shape = SHAPE_NAMES.get(args.shape, args.shape)
+    assert shape is not None
     run(
-        shape=SHAPE_NAMES.get(args.shape, args.shape),
+        shape=shape,
         n_iter=args.generations,
         pop_size=args.pop_size,
         summary_count=args.summary_count,
