@@ -1,6 +1,7 @@
 # main genetic algorithm loop
 
 from mesh_utils import reconstruct_sdf, resample_mesh
+from metrics import ShapeMetrics
 import torch
 import trimesh
 from model import Population, SDF
@@ -46,6 +47,9 @@ def run(
     out_dir: str | Path = "output",
     padding: float = 0.05, # percent padding to add to reconstruction bounds
     reconstruction_resolution: int = 200,
+    metrics_resolution: int = 64, # grid resolution for the chamfer reconstruction each generation
+    metrics_surface_samples: int = 5000, # surface points per shape for chamfer distance
+    metrics_volume_samples: int = 50000, # points in the bounding box for IoU
     device: str | None = None,
     seed: int | None = None,
 ):
@@ -84,7 +88,16 @@ def run(
         verts = verts.unsqueeze(0)
         normals = normals.unsqueeze(0)
 
+    print("Precomputing target samples for chamfer / IoU metrics...")
+    metrics = ShapeMetrics(mesh, lower, upper, metrics_surface_samples, metrics_volume_samples, metrics_resolution, device, dtype)
+    metrics_path = run_dir/"metrics.csv"
+    metrics_fig_path = run_dir/"metrics.png"
+    with metrics_path.open("w", encoding="utf-8") as f:
+        f.write("generation,loss,chamfer,iou\n")
+
     loss_history = np.zeros((n_iter, summary_count))
+    chamfer_history = np.full(n_iter, np.nan)
+    iou_history = np.full(n_iter, np.nan)
     color_history = np.zeros((n_iter, summary_count, 3))
 
     def callback(iter: int, max_iter: int, population: int, species_count: int, species_populations: torch.Tensor, losses: torch.Tensor, colors: torch.Tensor | None, sdfs: list[SDF]):
@@ -100,15 +113,23 @@ def run(
             sdfs (list[SDF]): SDF functions of top {summary_count} species representatives
         """
         
+        # chamfer distance and IoU of the best individual against the target
+        m = metrics(sdfs[0])
+        chamfer_history[iter-1] = m["chamfer"]
+        iou_history[iter-1] = m["iou"]
+        with metrics_path.open("a", encoding="utf-8") as f:
+            f.write(f"{iter},{losses[0].item():.8g},{m['chamfer']:.8g},{m['iou']:.8g}\n")
+
         loss_summary = ", ".join([f"{loss:.5g}" for loss in losses.detach().cpu().tolist()])
         node_count = sum(len(sdf.nodes) for sdf in sdfs)/len(sdfs)
-        print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nLoss: {loss_summary}\n")
+        print(f"Generation {iter}/{max_iter} -- Species: {species_count}, Avg Nodes: {node_count:.5g}, Simpson's Index: {simpson_index(population, species_populations):.5g}, Top {summary_count} species:\nLoss: {loss_summary}\nBest -- Chamfer: {m['chamfer']:.5g}, IoU: {m['iou']:.5g}\n")
         loss_history[iter-1] = losses.detach().cpu().numpy()
         if colors is not None:
             color_history[iter-1] = colors.detach().cpu().numpy()
 
         if iter % plot_every == 0 or iter == max_iter:
             plot_loss(iter, max_iter)
+            plot_metrics(iter, max_iter)
             
         if iter % save_every == 0:
             write_model_files(iter, sdfs)
@@ -141,6 +162,25 @@ def run(
         print("Loss plot updated.")
 
     
+    def plot_metrics(iter: int, max_iter: int):
+        x = np.arange(1, iter + 1)
+        fig, (ax_cd, ax_iou) = plt.subplots(1, 2, figsize=(14, 5))
+        ax_cd.plot(x, chamfer_history[:iter])
+        ax_cd.set_yscale("log")
+        ax_cd.set_xlabel("Epoch")
+        ax_cd.set_ylabel("Chamfer distance")
+        ax_cd.set_title("Best individual: Chamfer distance")
+        ax_cd.grid(True, which="both", linestyle="--", alpha=0.3)
+        ax_iou.plot(x, iou_history[:iter])
+        ax_iou.set_ylim(0, 1)
+        ax_iou.set_xlabel("Epoch")
+        ax_iou.set_ylabel("IoU")
+        ax_iou.set_title("Best individual: IoU")
+        ax_iou.grid(True, linestyle="--", alpha=0.3)
+        fig.suptitle(f"Metrics (Epoch {iter}/{max_iter})")
+        fig.savefig(metrics_fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
     def write_model_files(iter: int | str, sdfs: list[SDF]):
         output_path = models_path/f"iter_{iter}"
         output_path.mkdir(parents=True, exist_ok=True)
@@ -204,6 +244,11 @@ def run(
         for i in range(min(final_top_k, len(population.population)))
         ]
         write_model_files("final_refined", refined_sdfs)
+        final_metrics = [metrics(sdf) for sdf in refined_sdfs]
+        for i, m in enumerate(final_metrics):
+            print(f"Refined sdf-{i + 1} -- Chamfer: {m['chamfer']:.5g}, IoU: {m['iou']:.5g}")
+        with (run_dir/"final_refined_metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(final_metrics, f, indent=4)
 
     return population
 
