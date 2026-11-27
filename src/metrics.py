@@ -74,21 +74,22 @@ class ShapeMetrics:
         _, keep = np.unique(np.sort(mesh.faces, axis=1), axis=0, return_index=True)
         if len(keep) < len(mesh.faces):
             mesh = trimesh.Trimesh(mesh.vertices, mesh.faces[np.sort(keep)], process=True)
-            trimesh.repair.fix_normals(mesh)
+            trimesh.repair.fix_normals(mesh, multibody=True)
         tris = torch.tensor(mesh.triangles, device=device, dtype=dtype)
 
         self.lower, self.upper = list(lower), list(upper)
         self.surface_samples = surface_samples
         self.resolution = resolution
+        
+        with torch.random.fork_rng():
+            dummy_normals = torch.zeros(tris.shape[0], 3, device=device, dtype=dtype)
+            self.target_surface, _ = resample_mesh(tris, dummy_normals, surface_samples)
 
-        dummy_normals = torch.zeros(tris.shape[0], 3, device=device, dtype=dtype)
-        self.target_surface, _ = resample_mesh(tris, dummy_normals, surface_samples)
-
-        lo = torch.tensor(self.lower, device=device, dtype=dtype)
-        hi = torch.tensor(self.upper, device=device, dtype=dtype)
-        self.volume_points = lo + (hi - lo)*torch.rand(volume_samples, 3, device=device, dtype=dtype)
+            lo = torch.tensor(self.lower, device=device, dtype=dtype)
+            hi = torch.tensor(self.upper, device=device, dtype=dtype)
+            self.volume_points = lo + (hi - lo)*torch.rand(volume_samples, 3, device=device, dtype=dtype)
         with torch.no_grad():
-            self.target_inside = winding_number(self.volume_points, tris) > 0.5
+            self.target_inside = winding_number(self.volume_points, tris).abs() > 0.5
 
     @torch.no_grad()
     def iou(self, sdf: SDF) -> float:
@@ -113,4 +114,5 @@ class ShapeMetrics:
         return chamfer_distance(pred_surface, self.target_surface)
 
     def __call__(self, sdf: SDF) -> dict[str, float]:
-        return {"chamfer": self.chamfer(sdf), "iou": self.iou(sdf)}
+        with torch.random.fork_rng():
+            return {"chamfer": self.chamfer(sdf), "iou": self.iou(sdf)}
