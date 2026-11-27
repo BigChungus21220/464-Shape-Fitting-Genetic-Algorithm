@@ -38,9 +38,6 @@ Run `python src/main.py --help` for the full list. Common flags:
   - try using true contour distance as loss
   - add eikonal constraint (normal alignment loss, like in assignment 1)
 - research into GA selection strategies and decide on which we should be using
-- implement gradient descent updates
-  - Apply several steps of gradient descent to the population every few generations
-  - At the end, run deeper gradient descent on the best individual for the final model
 - improve loss function
   - apply eikonal loss
   - add some regularization terms
