@@ -36,7 +36,7 @@ def run(
     species_thresh: float = 0.5,
     fitness_sharing: bool = False,
     max_nodes_per_batch: int = 256,
-    refine_every: int = 5, # 0 = no gradient refinement (baseline run)
+    refine_every: int = 0, # 0 = no gradient refinement (baseline run)
     refine_steps: int = 5,
     refine_lr: float = 1e-2,
     final_top_k: int = 5,
@@ -160,9 +160,10 @@ def run(
         
 
 
+    extent = verts.abs().amax().item() # largest half-width of the target
     population = Population(
         pop_size = pop_size,
-        std = 1.0,
+        std = 0.25*extent,
         p_add = 0.9,
         min_nodes = min_nodes,
         max_nodes = max_nodes,

@@ -318,7 +318,7 @@ class Population:
         self.ids = torch.rand((N,), device=self.device, dtype=self.dtype)
         self.rotations = quat_random(N, torch.pi, device=self.device, dtype=self.dtype)
         self.translations = torch.normal(0.0, std, (N, 1, 3), device=self.device, dtype=self.dtype)
-        self.inflates = torch.normal(0.0, std, (N, 1), device=self.device, dtype=self.dtype)
+        self.inflates = torch.normal(0.0, 0.1*std, (N, 1),device=self.device, dtype=self.dtype)
         self.smoothings = torch.normal(0.0, std,(N, 1), device=self.device, dtype=self.dtype)
         self.signs = torch.where(torch.rand((N, 1)) < p_add, 1.0, -1.0).to(self.dtype).to(self.device)
         self.params = torch.normal(0.0, std, (N, MAX_PARAMS, 1, 1), device=self.device, dtype=self.dtype)
