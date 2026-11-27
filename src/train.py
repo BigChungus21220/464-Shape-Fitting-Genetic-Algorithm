@@ -47,9 +47,6 @@ def run(
     out_dir: str | Path = "output",
     padding: float = 0.05, # percent padding to add to reconstruction bounds
     reconstruction_resolution: int = 200,
-    metrics_resolution: int = 64, # grid resolution for the chamfer reconstruction each generation
-    metrics_surface_samples: int = 5000, # surface points per shape for chamfer distance
-    metrics_volume_samples: int = 50000, # points in the bounding box for IoU
     device: str | None = None,
     seed: int | None = None,
 ):
@@ -89,7 +86,7 @@ def run(
         normals = normals.unsqueeze(0)
 
     print("Precomputing target samples for chamfer / IoU metrics...")
-    metrics = ShapeMetrics(mesh, lower, upper, metrics_surface_samples, metrics_volume_samples, metrics_resolution, device, dtype)
+    metrics = ShapeMetrics(mesh, lower, upper, device=device, dtype=dtype)
     metrics_path = run_dir/"metrics.csv"
     metrics_fig_path = run_dir/"metrics.png"
     with metrics_path.open("w", encoding="utf-8") as f:
