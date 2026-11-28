@@ -1,9 +1,24 @@
 from collections.abc import Sequence
+import numpy as np
 import torch
+import trimesh
 import isoext as ix
 from pathlib import Path
 
 from model import SDF
+
+
+def remove_double_sided(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Some targets (e.g. sofa) are double-sided: every face appears twice with opposite
+    orientation, so face normals and winding numbers cancel. Drops the duplicates and
+    makes the orientation consistent. Returns the mesh unchanged if it has no duplicates.
+    """
+    _, keep = np.unique(np.sort(mesh.faces, axis=1), axis=0, return_index=True)
+    if len(keep) == len(mesh.faces):
+        return mesh
+    mesh = trimesh.Trimesh(mesh.vertices, mesh.faces[np.sort(keep)], process=True)
+    trimesh.repair.fix_normals(mesh, multibody=True)
+    return mesh
 
 def reconstruct_sdf(sdf: SDF, lower: Sequence[float], upper: Sequence[float], grid_resolution: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Reconstructs a mesh from an SDF

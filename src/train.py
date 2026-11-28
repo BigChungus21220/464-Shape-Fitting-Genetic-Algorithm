@@ -1,6 +1,6 @@
 # main genetic algorithm loop
 
-from mesh_utils import reconstruct_sdf, resample_mesh
+from mesh_utils import reconstruct_sdf, remove_double_sided, resample_mesh
 from metrics import ShapeMetrics
 import torch
 import trimesh
@@ -70,6 +70,7 @@ def run(
     dtype = torch.float32
 
     mesh: trimesh.Trimesh = trimesh.load(shape, force='mesh') # type: ignore
+    mesh = remove_double_sided(mesh) # otherwise sampled normals point in/out at random
     bounds: tuple[list[float], list[float]] = mesh.bounds
     size = [bounds[1][i] - bounds[0][i] for i in range(3)]
     lower = [(bounds[0][i] - size[i]*padding) for i in range(3)]

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import trimesh
 
-from mesh_utils import reconstruct_sdf, resample_mesh
+from mesh_utils import reconstruct_sdf, remove_double_sided, resample_mesh
 from model import SDF
 
 
@@ -69,12 +69,7 @@ class ShapeMetrics:
             volume_samples (int): uniform points in the bounding box for IoU
             resolution (int): grid resolution used to reconstruct the SDF surface for chamfer distance
         """
-        # some targets (e.g. sofa) are double-sided: every face appears twice with opposite
-        # orientation, so winding numbers cancel. Drop duplicates and make orientation consistent.
-        _, keep = np.unique(np.sort(mesh.faces, axis=1), axis=0, return_index=True)
-        if len(keep) < len(mesh.faces):
-            mesh = trimesh.Trimesh(mesh.vertices, mesh.faces[np.sort(keep)], process=True)
-            trimesh.repair.fix_normals(mesh, multibody=True)
+        mesh = remove_double_sided(mesh) # otherwise winding numbers cancel on double-sided targets
         tris = torch.tensor(mesh.triangles, device=device, dtype=dtype)
 
         self.lower, self.upper = list(lower), list(upper)
