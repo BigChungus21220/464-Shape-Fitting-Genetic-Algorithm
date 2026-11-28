@@ -391,7 +391,8 @@ class Population:
 
                 # step over all indiv nodes at once
                 first_idx = bnodes_to_unique[boffsets] if bnodes_to_unique is not None else boffsets
-                indiv_sdfs = inflated_sdfs[first_idx]  # (B, V)
+                # apply the first node's sign, matching SDF.__call__
+                indiv_sdfs = self.signs[bnodes[boffsets]] * inflated_sdfs[first_idx]  # (B, V)
 
                 for i in range(1, max_bcount):
                     valid_idx = (i < bcounts).nonzero(as_tuple=True)[0]  # B -> R
